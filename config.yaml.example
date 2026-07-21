@@ -1,0 +1,21 @@
+# deployd global configuration
+server:
+  host: "0.0.0.0"
+  port: 9527
+
+webhook:
+  secret: ""  # optional, used for GitHub/Gitee webhook signature verification
+
+# Service list
+services:
+  - name: "my-springboot-app"
+    type: "springboot"
+    repo:
+      url: "https://github.com/user/repo.git"
+      token: ""  # GitHub Personal Access Token
+      branch: "main"
+    workspace: "/opt/deployd/apps/my-springboot-app"
+    build:
+      command: "mvn package -DskipTests"
+    run:
+      command: "/opt/deployd/apps/my-springboot-app/start.sh"
