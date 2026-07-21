@@ -1,0 +1,34 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+deployd
+deployd*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+target/
+build/
+dist/
+*.jar
+*.war
+
+# Logs
+*.log
+logs/
+
+# Config (contains secrets)
+config.yaml
+.env
+*.secret
