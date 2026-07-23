@@ -1,25 +1,24 @@
 package cmd
 
 import (
-	"fmt"
-
+	"auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
 )
+
+func init() {
+	logsCmd.Flags().StringVarP(&configFile, "file", "f", "", "log file path")
+	rootCmd.AddCommand(logsCmd)
+}
 
 var logsCmd = &cobra.Command{
 	Use:   "logs [service_name]",
 	Short: "View deployd or service logs",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		var name string
 		if len(args) > 0 {
-			fmt.Printf("showing logs for %s...\n", args[0])
-		} else {
-			fmt.Println("showing deployd logs...")
+			name = args[0]
 		}
-		return nil
+		return daemon.Logs(name)
 	},
-}
-
-func init() {
-	rootCmd.AddCommand(logsCmd)
 }

@@ -9,24 +9,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var configFile string
+
+func init() {
+	startCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
+	rootCmd.AddCommand(startCmd)
+}
+
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the deployd daemon in background",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		configPath := configFile
-		if configPath == "" {
+		path := configFile
+		if path == "" {
 			home, _ := os.UserHomeDir()
-			configPath = filepath.Join(home, "config.yaml")
+			path = filepath.Join(home, "config.yaml")
 		}
 
-		if err := daemon.Start(configPath); err != nil {
+		if err := daemon.Start(path); err != nil {
 			return err
 		}
 		fmt.Fprintln(os.Stdout, "deployd started successfully")
 		return nil
 	},
-}
-
-func init() {
-	rootCmd.AddCommand(startCmd)
 }

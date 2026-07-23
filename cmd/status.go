@@ -1,20 +1,18 @@
 package cmd
 
 import (
-	"fmt"
-
+	"auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
 )
+
+func init() {
+	rootCmd.AddCommand(statusCmd)
+}
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show deployd and all services status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("checking status...")
-		return nil
+		return daemon.Status()
 	},
-}
-
-func init() {
-	rootCmd.AddCommand(statusCmd)
 }

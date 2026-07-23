@@ -1,20 +1,18 @@
 package cmd
 
 import (
-	"fmt"
-
+	"auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
 )
+
+func init() {
+	rootCmd.AddCommand(stopCmd)
+}
 
 var stopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the deployd daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("stopping deployd...")
-		return nil
+		return daemon.Stop()
 	},
-}
-
-func init() {
-	rootCmd.AddCommand(stopCmd)
 }
