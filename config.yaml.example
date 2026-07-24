@@ -6,6 +6,19 @@ server:
 webhook:
   secret: ""  # optional, used for GitHub/Gitee webhook signature verification
 
+# SMTP configuration for email notifications
+smtp:
+  host: "smtp.qq.com"
+  port: 465
+  username: "your-email@qq.com"
+  token: "your-smtp-authorization-code"
+  tls: true
+
+# Notification recipients
+notifications:
+  to:
+    - "admin@example.com"
+
 # Service list
 services:
   - name: "my-springboot-app"

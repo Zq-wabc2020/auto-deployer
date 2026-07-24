@@ -53,8 +53,33 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 	buildCmd := ask("Build command", "mvn package -DskipTests")
 	runCmd := ask("Run command", "")
 
+	smtpHost := ask("SMTP host (optional, e.g. smtp.qq.com)", "")
+	smtpPortStr := ask("SMTP port", "")
+	smtpPort, _ := strconv.Atoi(smtpPortStr)
+	if smtpPort == 0 {
+		smtpPortStr = "465"
+		smtpPort, _ = strconv.Atoi(smtpPortStr)
+	}
+	smtpUser := ask("SMTP username", "")
+	smtpToken := ask("SMTP token (authorization code)", "")
+	smtpTLS := ask("Use TLS/SSL", "true")
+	smtpTLSBool := smtpTLS == "true"
+
+	notificationToInput := ask("Notification recipients (comma-separated, optional)", "")
+	var notificationTo []string
+	if notificationToInput != "" {
+		for _, addr := range strings.Split(notificationToInput, ",") {
+			addr = strings.TrimSpace(addr)
+			if addr != "" {
+				notificationTo = append(notificationTo, addr)
+			}
+		}
+	}
+
 	cfg := &AppConfig{
 		Server: ServerConfig{Host: host, Port: port},
+		SMTP:   SMTPConfig{Host: smtpHost, Port: smtpPort, Username: smtpUser, Token: smtpToken, TLS: smtpTLSBool},
+		Notifications: NotificationConfig{To: notificationTo},
 		Services: []ServiceConfig{{
 			Name:      name,
 			Type:      svcType,
