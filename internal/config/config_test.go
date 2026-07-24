@@ -173,3 +173,55 @@ services:
 		t.Fatal("expected error when loading invalid YAML, got nil")
 	}
 }
+
+func TestParseSMTPAndNotificationConfig(t *testing.T) {
+	yamlContent := []byte(`
+server:
+  host: "0.0.0.0"
+  port: 9527
+
+smtp:
+  host: "smtp.example.com"
+  port: 587
+  username: "deploy@example.com"
+  token: "smtp-token-123"
+  tls: true
+
+notifications:
+  to:
+    - "team@example.com"
+    - "ops@example.com"
+
+services: []
+`)
+
+	var cfg AppConfig
+	if err := yaml.Unmarshal(yamlContent, &cfg); err != nil {
+		t.Fatalf("failed to unmarshal config: %v", err)
+	}
+
+	if cfg.SMTP.Host != "smtp.example.com" {
+		t.Errorf("expected SMTP host 'smtp.example.com', got '%s'", cfg.SMTP.Host)
+	}
+	if cfg.SMTP.Port != 587 {
+		t.Errorf("expected SMTP port 587, got %d", cfg.SMTP.Port)
+	}
+	if cfg.SMTP.Username != "deploy@example.com" {
+		t.Errorf("expected SMTP username 'deploy@example.com', got '%s'", cfg.SMTP.Username)
+	}
+	if cfg.SMTP.Token != "smtp-token-123" {
+		t.Errorf("expected SMTP token 'smtp-token-123', got '%s'", cfg.SMTP.Token)
+	}
+	if !cfg.SMTP.TLS {
+		t.Error("expected SMTP TLS to be true")
+	}
+	if len(cfg.Notifications.To) != 2 {
+		t.Fatalf("expected 2 notification recipients, got %d", len(cfg.Notifications.To))
+	}
+	if cfg.Notifications.To[0] != "team@example.com" {
+		t.Errorf("expected first recipient 'team@example.com', got '%s'", cfg.Notifications.To[0])
+	}
+	if cfg.Notifications.To[1] != "ops@example.com" {
+		t.Errorf("expected second recipient 'ops@example.com', got '%s'", cfg.Notifications.To[1])
+	}
+}

@@ -16,6 +16,18 @@ type WebhookConfig struct {
     Secret string `yaml:"secret"`
 }
 
+type SMTPConfig struct {
+    Host     string `yaml:"host"`
+    Port     int    `yaml:"port"`
+    Username string `yaml:"username"`
+    Token    string `yaml:"token"`
+    TLS      bool   `yaml:"tls"`
+}
+
+type NotificationConfig struct {
+    To []string `yaml:"to"`
+}
+
 type RepoConfig struct {
     URL    string `yaml:"url"`
     Token  string `yaml:"token"`
@@ -40,9 +52,11 @@ type ServiceConfig struct {
 }
 
 type AppConfig struct {
-    Server   ServerConfig    `yaml:"server"`
-    Webhook  WebhookConfig   `yaml:"webhook"`
-    Services []ServiceConfig `yaml:"services"`
+    Server        ServerConfig       `yaml:"server"`
+    Webhook       WebhookConfig      `yaml:"webhook"`
+    SMTP          SMTPConfig         `yaml:"smtp"`
+    Notifications NotificationConfig `yaml:"notifications"`
+    Services      []ServiceConfig    `yaml:"services"`
 }
 
 func Load(path string) (*AppConfig, error) {
