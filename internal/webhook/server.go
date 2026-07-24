@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/notify"
 )
 
 // GitHubPushPayload represents a GitHub push webhook event.
@@ -93,8 +95,27 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	result.ServiceName = matched.Name
 	fmt.Printf("[webhook] matched service: %s\n", result.ServiceName)
 
+	// Send deployment started notification in background
+	if hasNotifications(cfg) {
+		notifier := notify.New(
+			cfg.SMTP.Host,
+			cfg.SMTP.Port,
+			cfg.SMTP.Username,
+			cfg.SMTP.Token,
+			cfg.SMTP.TLS,
+			cfg.Notifications.To,
+		)
+		go func() {
+			ctx := context.Background()
+			err := notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "running", "")
+			if err != nil {
+				fmt.Printf("[notify] failed to send notification: %v\n", err)
+			}
+		}()
+	}
+
 	// TODO: dispatch to plugin for build + restart
-	_ = matched // suppress unused warning
+	_ = matched
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
@@ -174,4 +195,8 @@ func detectSource(r *http.Request) string {
 func loadConfig() (*config.AppConfig, error) {
 	home, _ := os.UserHomeDir()
 	return config.Load(filepath.Join(home, "config.yaml"))
+}
+
+func hasNotifications(cfg *config.AppConfig) bool {
+	return cfg != nil && len(cfg.Notifications.To) > 0
 }
