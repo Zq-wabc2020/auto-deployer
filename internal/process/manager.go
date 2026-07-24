@@ -30,7 +30,7 @@ func (m *Manager) Start(name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	cmd.SysProcAttr = syscall.Setsid
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start process: %w", err)

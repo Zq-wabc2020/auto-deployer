@@ -1,6 +1,6 @@
 package main
 
-import "auto-deployer/cmd"
+import "github.com/auto-deployer/auto-deployer/cmd"
 
 func main() {
 	cmd.Execute()

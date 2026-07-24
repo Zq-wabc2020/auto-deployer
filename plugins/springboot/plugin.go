@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"auto-deployer/internal/build"
-	"auto-deployer/internal/config"
-	"auto-deployer/internal/process"
+	"github.com/auto-deployer/auto-deployer/internal/build"
+	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/process"
 )
 
 // Plugin implements the Deployer interface for Spring Boot applications.

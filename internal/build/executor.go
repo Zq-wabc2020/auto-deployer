@@ -2,8 +2,8 @@ package build
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
-	"strings"
 )
 
 // ExecuteBuild runs the given shell command in the specified workspace directory.

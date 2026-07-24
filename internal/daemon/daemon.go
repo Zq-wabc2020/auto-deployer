@@ -6,15 +6,14 @@ import (
 	"os"
 	"path/filepath"
 
-	"auto-deployer/internal/build"
-	"auto-deployer/internal/config"
-	"auto-deployer/internal/process"
-	"auto-deployer/internal/webhook"
-	"auto-deployer/plugins/springboot"
+	"github.com/auto-deployer/auto-deployer/internal/build"
+	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/process"
+	"github.com/auto-deployer/auto-deployer/internal/webhook"
+	"github.com/auto-deployer/auto-deployer/plugins/springboot"
 )
 
 const defaultConfigName = "config.yaml"
-const defaultPidDir = ".deployd/run"
 
 // Start loads config, validates it, checks the environment, and launches the webhook server.
 func Start(configPath string) error {

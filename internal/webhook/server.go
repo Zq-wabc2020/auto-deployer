@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/config"
 )
 
 // GitHubPushPayload represents a GitHub push webhook event.

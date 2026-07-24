@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"auto-deployer/internal/webhook"
+	"github.com/auto-deployer/auto-deployer/internal/webhook"
 )
 
 func TestWebhook_ParsesGitHubPayload(t *testing.T) {

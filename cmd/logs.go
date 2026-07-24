@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"auto-deployer/internal/daemon"
+	"github.com/auto-deployer/auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
 )
 

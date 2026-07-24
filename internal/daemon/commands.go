@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"auto-deployer/internal/config"
-	"auto-deployer/internal/process"
+	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/process"
 )
 
 const defaultPidDir = ".deployd/run"

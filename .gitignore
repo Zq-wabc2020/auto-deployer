@@ -17,10 +17,10 @@ deployd*
 .DS_Store
 Thumbs.db
 
-# Build artifacts
-target/
-build/
-dist/
+# Build artifacts (only top-level)
+^target$
+^build$
+^dist$
 *.jar
 *.war
 
