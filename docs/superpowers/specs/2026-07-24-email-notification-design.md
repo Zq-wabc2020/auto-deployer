@@ -1,23 +1,23 @@
-# Email Notification Design
+# 邮件通知设计
 
-**Date:** 2026-07-24
-**Status:** Approved
+**日期：** 2026-07-24
+**状态：** 已审批
 
-## Overview
+## 概述
 
-Add email notification support to deployd. On deployment failure, send an immediate email with full error details for troubleshooting. On successful completion of the entire deployment flow, send one confirmation email. Recipients include the git author's email (extracted from webhook payload) plus a configured list of notification recipients.
+为 deployd 添加邮件通知功能。部署失败时立即发送邮件，包含完整的错误信息便于排查；整个部署流程成功后发送一封确认邮件。收件人包括从 webhook payload 中提取的代码变更者 git 邮箱 + 配置的接收邮箱列表。
 
-## Configuration
+## 配置
 
-Add two top-level blocks to `config.yaml`:
+在 `config.yaml` 顶层新增 `smtp` 和 `notifications` 两个块：
 
 ```yaml
 smtp:
   host: "smtp.qq.com"
   port: 465
   username: "xxx@qq.com"
-  token: "授权码"   # SMTP authorization code, not login password
-  tls: true        # STARTTLS or SSL
+  token: "授权码"   # SMTP 授权码，非登录密码
+  tls: true        # STARTTLS 或 SSL 加密
 
 notifications:
   to:
@@ -25,80 +25,78 @@ notifications:
     - "team@example.com"
 ```
 
-Validation rule: when `notifications.to` is non-empty, all `smtp.*` fields become required.
+校验规则：当 `notifications.to` 非空时，所有 `smtp.*` 字段变为必填。
 
-## Architecture
+## 架构
 
-### New package: `internal/notify`
+### 新增包：`internal/notify`
 
-Single file `email.go`:
+单文件 `email.go`：
 
-| Component | Responsibility |
-|-----------|---------------|
-| `SMTPConfig` struct | Holds host, port, username, token, tls flag |
-| `NotificationConfig` struct | Holds to-list |
-| `Notifier` struct | Wraps SMTP config + to-list, holds a single `*smtp.Client` or TLS connection |
-| `New(cfg SMTPConfig, to []string) (*Notifier, error)` | Constructor, validates config |
-| `Send(ctx, subject, body string) error` | Low-level send, accepts HTML body |
-| `NotifyDeployResult(ctx, svcName, branch, authorEmail, status, errMsg string) error` | High-level: assembles subject/body, sends to all recipients |
+| 组件 | 职责 |
+|------|------|
+| `SMTPConfig` 结构体 | 保存 host、port、username、token、tls 标志 |
+| `NotificationConfig` 结构体 | 保存接收邮箱列表 |
+| `Notifier` 结构体 | 封装 SMTP 配置 + 接收列表，持有单个 TLS 连接 |
+| `New(cfg SMTPConfig, to []string) (*Notifier, error)` | 构造函数，校验配置 |
+| `Send(ctx, subject, body string) error` | 底层发送，接受 HTML 正文 |
+| `NotifyDeployResult(ctx, svcName, branch, authorEmail, status, errMsg string) error` | 高层接口：组装主题和正文，群发到所有收件人 |
 
-SMTP dial uses `crypto/tls.Config` for port 465 (SSL), or `STARTTLS` for other ports. Auth uses `smtp.PlainAuth` with username + token.
+连接方式：端口 465 使用 `crypto/tls` 直连 SSL，其他端口使用 STARTTLS 升级。认证使用 `smtp.PlainAuth`，凭据为 username + token。
 
-### Recipients
+### 收件人
 
-- All addresses in `notifications.to`
-- `authorEmail` extracted from webhook payload (appended if non-empty)
-- BCC the daemon itself is not needed; all recipients see each other (acceptable for team notifications)
+- `notifications.to` 配置的所有地址
+- 从 webhook payload 提取的 `authorEmail`（如有则追加）
+- 不隐藏互相可见的收件人（团队通知场景可接受）
 
-### Email content
+### 邮件内容
 
-**Subject format:**
-- Success: `[deployd] ✅ 部署成功: <service-name>`
-- Failure: `[deployd] ❌ 部署失败: <service-name>`
+**主题格式：**
+- 成功：`[deployd] ✅ 部署成功: <服务名>`
+- 失败：`[deployd] ❌ 部署失败: <服务名>`
 
-**Body (HTML table format):**
-- Deployment success: service name, branch, author, timestamp, build command, run command
-- Deployment failure: all above + failure stage (git pull / build / restart), full error message, timestamp
+**正文（HTML 表格格式）：**
+- 成功邮件：服务名、分支、作者邮箱、时间戳、构建命令、运行命令
+- 失败邮件：以上全部 + 失败阶段（git pull / build / restart）、完整错误信息、时间戳
 
-### Webhook payload extension
+### Webhook payload 扩展
 
-Extend `DispatchResult` in `internal/webhook/server.go`:
+在 `internal/webhook/server.go` 的 `DispatchResult` 中新增字段：
 
 ```go
 type DispatchResult struct {
     ServiceName  string
     Branch       string
     RepoURL      string
-    AuthorEmail  string   // new field
+    AuthorEmail  string   // 新增字段
 }
 ```
 
-Extract from:
-- **GitHub**: `commits[0].author.email` (falls back to `committer.email`, then empty)
-- **Gitee**: same field path (`commits[0].author.email`)
-- If commits array is empty or email is missing, `AuthorEmail` stays empty — notification still sends to configured `to` list only
+提取来源：
+- **GitHub**：`commits[0].author.email`（fallback 到 `committer.email`，再为空则留空）
+- **Gitee**：同上路径 `commits[0].author.email`
+- 如果 commits 数组为空或缺少 email，`AuthorEmail` 保持为空 —— 通知仍会发送到配置的 to 列表
 
-### Integration points
+### 集成点
 
-1. **Webhook handler** (`internal/webhook/server.go`): After matching a service, call `NotifyDeployResult("running", "")` to fire off a "deployment started" log entry (no email yet). The actual success/failure email fires after the deploy flow completes.
+1. **Webhook handler**（`internal/webhook/server.go`）：匹配到服务后，将调用 `NotifyDeployResult` 在部署流程成功/失败时触发邮件
+2. **TriggerDeploy 命令**（`internal/daemon/commands.go`）：替换 TODO 占位符，在每一步调用 `NotifyDeployResult`，失败时携带错误详情
+3. **配置向导**（`internal/config/wizard.go`）：交互提示中增加 SMTP 主机/端口/用户名/授权码和通知接收邮箱列表的输入
 
-2. **TriggerDeploy command** (`internal/daemon/commands.go`): Replace the TODO deploy flow stub with real execution, calling `NotifyDeployResult` on success or failure at each step.
+## 变更文件清单
 
-3. **Config wizard** (`internal/config/wizard.go`): Add prompts for SMTP host/port/username/token and notification to-list during interactive setup.
+| 操作 | 文件 |
+|------|------|
+| 修改 | `internal/config/config.go` — 新增 SMTPConfig、NotificationConfig |
+| 修改 | `internal/config/validate.go` — 新增 SMTP 字段校验 |
+| 修改 | `internal/config/wizard.go` — 新增 SMTP/通知配置交互提示 |
+| 修改 | `internal/webhook/server.go` — DispatchResult 新增 AuthorEmail，ParsePayload 中提取 |
+| 修改 | `internal/daemon/commands.go` — TriggerDeploy 集成 notifier |
+| 新增 | `internal/notify/email.go` — 邮件发送核心逻辑 |
+| 新增 | `internal/notify/email_test.go` — 单元测试 |
+| 修改 | `config.yaml.example` — 添加 SMTP/通知配置示例 |
 
-## Files changed
+## 依赖
 
-| Action | File |
-|--------|------|
-| Modify | `internal/config/config.go` — add SMTPConfig, NotificationConfig |
-| Modify | `internal/config/validate.go` — add SMTP field validation |
-| Modify | `internal/config/wizard.go` — add SMTP/notification prompts |
-| Modify | `internal/webhook/server.go` — add AuthorEmail to DispatchResult, extract from payload |
-| Modify | `internal/daemon/commands.go` — integrate notifier into TriggerDeploy |
-| Add | `internal/notify/email.go` — core email sending logic |
-| Add | `internal/notify/email_test.go` — unit tests |
-| Modify | `config.yaml.example` — add SMTP/notification examples |
-
-## Dependencies
-
-Standard library only: `crypto/tls`, `net/smtp`, `time`. No third-party packages needed.
+仅使用标准库：`crypto/tls`、`net/smtp`、`time`。无需第三方包。
