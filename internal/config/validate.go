@@ -34,5 +34,22 @@ func Validate(cfg *AppConfig) []error {
 			errs = append(errs, fmt.Errorf("%s: run.command is required", prefix))
 		}
 	}
+
+	// Validate SMTP config when notifications.to is non-empty
+	if len(cfg.Notifications.To) > 0 {
+		if cfg.SMTP.Host == "" {
+			errs = append(errs, fmt.Errorf("smtp.host is required when notifications.to is set"))
+		}
+		if cfg.SMTP.Port == 0 {
+			errs = append(errs, fmt.Errorf("smtp.port is required when notifications.to is set"))
+		}
+		if cfg.SMTP.Username == "" {
+			errs = append(errs, fmt.Errorf("smtp.username is required when notifications.to is set"))
+		}
+		if cfg.SMTP.Token == "" {
+			errs = append(errs, fmt.Errorf("smtp.token is required when notifications.to is set"))
+		}
+	}
+
 	return errs
 }

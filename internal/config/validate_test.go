@@ -171,3 +171,42 @@ func TestValidate_MultipleServices(t *testing.T) {
 		t.Errorf("expected at least 4 errors for second service, got %d: %v", len(errs), errs)
 	}
 }
+
+func TestValidate_SMTPMissing(t *testing.T) {
+	cfg := &AppConfig{
+		Server:   ServerConfig{Host: "0.0.0.0", Port: 9527},
+		Services: []ServiceConfig{{Name: "test", Type: "springboot", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: "true"}, Run: RunConfig{Command: "true"}}},
+		Notifications: NotificationConfig{To: []string{"a@b.com"}},
+		SMTP:       SMTPConfig{}, // empty
+	}
+	errs := Validate(cfg)
+	if len(errs) != 4 {
+		t.Fatalf("expected 4 errors, got %d: %v", len(errs), errs)
+	}
+}
+
+func TestValidate_SMTPComplete(t *testing.T) {
+	cfg := &AppConfig{
+		Server:   ServerConfig{Host: "0.0.0.0", Port: 9527},
+		Services: []ServiceConfig{{Name: "test", Type: "springboot", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: "true"}, Run: RunConfig{Command: "true"}}},
+		Notifications: NotificationConfig{To: []string{"a@b.com"}},
+		SMTP:       SMTPConfig{Host: "smtp.qq.com", Port: 465, Username: "x@qq.com", Token: "abc"},
+	}
+	errs := Validate(cfg)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 errors, got %d: %v", len(errs), errs)
+	}
+}
+
+func TestValidate_SMTPNotRequiredWhenNoTo(t *testing.T) {
+	cfg := &AppConfig{
+		Server:        ServerConfig{Host: "0.0.0.0", Port: 9527},
+		Services:      []ServiceConfig{{Name: "test", Type: "springboot", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: "true"}, Run: RunConfig{Command: "true"}}},
+		Notifications: NotificationConfig{To: nil},
+		SMTP:          SMTPConfig{}, // empty, but to is empty so OK
+	}
+	errs := Validate(cfg)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 errors, got %d: %v", len(errs), errs)
+	}
+}
