@@ -14,25 +14,40 @@ import (
 
 // GitHubPushPayload represents a GitHub push webhook event.
 type GitHubPushPayload struct {
-	Ref        string `json:"ref"`
+	Ref        string          `json:"ref"`
 	Repository struct {
 		CloneURL string `json:"clone_url"`
 	} `json:"repository"`
+	Commits []GitHubCommit `json:"commits"`
 }
 
 // GiteePushPayload represents a Gitee push webhook event.
 type GiteePushPayload struct {
-	Ref        string `json:"ref"`
+	Ref        string          `json:"ref"`
 	Repository struct {
 		GitHTTPURL string `json:"git_http_url"`
 	} `json:"repository"`
+	Commits []GitHubCommit `json:"commits"`
 }
 
 // DispatchResult contains the parsed dispatch information from a webhook payload.
 type DispatchResult struct {
-	ServiceName string
-	Branch      string
-	RepoURL     string
+	ServiceName  string
+	Branch       string
+	RepoURL      string
+	AuthorEmail  string
+}
+
+// GitSignature represents author/committer info from a webhook commit.
+type GitSignature struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+// GitHubCommit represents a commit in a GitHub/Gitee push payload.
+type GitHubCommit struct {
+	Author    GitSignature `json:"author"`
+	Committer GitSignature `json:"committer"`
 }
 
 // Handle is the HTTP handler for webhook events from both GitHub and Gitee.
@@ -95,8 +110,9 @@ func ParsePayload(body []byte, source string) (*DispatchResult, error) {
 		}
 		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
 		return &DispatchResult{
-			Branch:  branch,
-			RepoURL: payload.Repository.CloneURL,
+			Branch:      branch,
+			RepoURL:     payload.Repository.CloneURL,
+			AuthorEmail: extractAuthorEmail(payload.Commits),
 		}, nil
 
 	case "gitee":
@@ -105,13 +121,26 @@ func ParsePayload(body []byte, source string) (*DispatchResult, error) {
 			return nil, err
 		}
 		return &DispatchResult{
-			Branch:  payload.Ref,
-			RepoURL: payload.Repository.GitHTTPURL,
+			Branch:      payload.Ref,
+			RepoURL:     payload.Repository.GitHTTPURL,
+			AuthorEmail: extractAuthorEmail(payload.Commits),
 		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown webhook source: %s", source)
 	}
+}
+
+// extractAuthorEmail returns the author email from the first commit,
+// falling back to committer email if author email is empty.
+func extractAuthorEmail(commits []GitHubCommit) string {
+	if len(commits) == 0 {
+		return ""
+	}
+	if email := commits[0].Author.Email; email != "" {
+		return email
+	}
+	return commits[0].Committer.Email
 }
 
 // MatchService finds the first service whose repo URL and branch match the dispatch result.

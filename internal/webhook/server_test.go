@@ -70,6 +70,47 @@ func TestParsePayload_Gitee(t *testing.T) {
 	}
 }
 
+func TestParsePayload_GitHubWithCommits(t *testing.T) {
+	body := []byte(`{
+		"ref":"refs/heads/main",
+		"repository":{"clone_url":"https://github.com/user/repo.git"},
+		"commits":[{"author":{"email":"dev@example.com","name":"Dev"},"committer":{"email":"committer@example.com","name":"Committer"}}]
+	}`)
+	result, err := ParsePayload(body, "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AuthorEmail != "dev@example.com" {
+		t.Errorf("expected dev@example.com, got %s", result.AuthorEmail)
+	}
+}
+
+func TestParsePayload_GiteeWithCommits(t *testing.T) {
+	body := []byte(`{
+		"ref":"main",
+		"repository":{"git_http_url":"https://gitee.com/user/repo.git"},
+		"commits":[{"author":{"email":"dev@gitee.com","name":"Dev"}}]
+	}`)
+	result, err := ParsePayload(body, "gitee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AuthorEmail != "dev@gitee.com" {
+		t.Errorf("expected dev@gitee.com, got %s", result.AuthorEmail)
+	}
+}
+
+func TestParsePayload_NoCommits(t *testing.T) {
+	body := []byte(`{"ref":"refs/heads/main","repository":{"clone_url":"https://github.com/user/repo.git"}}`)
+	result, err := ParsePayload(body, "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AuthorEmail != "" {
+		t.Errorf("expected empty author email, got %s", result.AuthorEmail)
+	}
+}
+
 func TestParsePayload_UnknownSource(t *testing.T) {
 	body := []byte("{}")
 	_, err := ParsePayload(body, "unknown")
