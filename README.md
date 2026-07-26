@@ -12,24 +12,44 @@
 - **交互式配置向导** — `deployd config` 引导完成配置
 - **发布自动化** — GitHub Actions 自动构建 macOS / Linux 二进制
 
-## 安装
+### 安装
 
-### 安装脚本（推荐）
+#### 从 Release 下载（推荐）
+
+在 [Releases](https://github.com/Zq-wabc2020/auto-deployer/releases) 页面下载对应平台的二进制文件并放到 PATH 中即可。
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/auto-deployer/auto-deployer/main/install.sh | sh
+# macOS (Intel)
+curl -fLO https://github.com/Zq-wabc2020/auto-deployer/releases/latest/download/deployd-darwin-amd64.tar.gz
+tar -xzf deployd-darwin-amd64.tar.gz
+sudo mv deployd-darwin-amd64 /usr/local/bin/deployd
+chmod +x /usr/local/bin/deployd
+
+# macOS (Apple Silicon)
+curl -fLO https://github.com/Zq-wabc2020/auto-deployer/releases/latest/download/deployd-darwin-arm64.tar.gz
+tar -xzf deployd-darwin-arm64.tar.gz
+sudo mv deployd-darwin-arm64 /usr/local/bin/deployd
+chmod +x /usr/local/bin/deployd
+
+# Linux (amd64)
+curl -fLO https://github.com/Zq-wabc2020/auto-deployer/releases/latest/download/deployd-linux-amd64.tar.gz
+tar -xzf deployd-linux-amd64.tar.gz
+sudo mv deployd-linux-amd64 /usr/local/bin/deployd
+chmod +x /usr/local/bin/deployd
+
+# Linux (arm64)
+curl -fLO https://github.com/Zq-wabc2020/auto-deployer/releases/latest/download/deployd-linux-arm64.tar.gz
+tar -xzf deployd-linux-arm64.tar.gz
+sudo mv deployd-linux-arm64 /usr/local/bin/deployd
+chmod +x /usr/local/bin/deployd
 ```
 
-### 从源码编译
+#### 从源码编译
 
 ```bash
 go build -o deployd .
 sudo mv deployd /usr/local/bin/
 ```
-
-### 从 Release 下载
-
-在 [Releases](https://github.com/auto-deployer/auto-deployer/releases) 页面下载最新二进制文件并放到 PATH 中即可。
 
 ## 使用方法
 

@@ -28,13 +28,9 @@ chmod +x "${INSTALL_DIR}/deployd"
 # Install example configuration
 mkdir -p "$(dirname "$CONFIG_FILE")"
 if [ ! -f "$CONFIG_FILE" ]; then
-    curl -fsSL \
-      "https://raw.githubusercontent.com/auto-deployer/auto-deployer/main/config.yaml.example" \
-      -o "$CONFIG_FILE"
-    echo ""
-    echo "Example config installed to $CONFIG_FILE"
-    echo "Edit it with your settings, then run:"
-    echo "  deployd config   # interactive wizard"
+    echo "Example config not available for private repos."
+    echo "Please download it from:"
+    echo "  https://github.com/Zq-wabc2020/auto-deployer/releases/latest"
 fi
 
 echo ""
