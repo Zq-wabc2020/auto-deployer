@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 
@@ -64,6 +64,9 @@ func Start(configPath string) error {
 	// 6. Register Spring Boot plugin
 	springboot.New()
 
+	// 6.5 Set config path for webhook handler
+	webhook.SetConfigPath(configPath)
+
 	// 7. Ensure SSH key exists and print setup instructions if needed
 	if privKeyPath, _, pubKey, err := build.EnsureSSHKey(); err != nil {
 		fmt.Fprintf(os.Stderr, "[daemon] warning: failed to check SSH key: %v\n", err)
@@ -97,21 +100,71 @@ func Start(configPath string) error {
 		return fmt.Errorf("deployd is already running (pid: %d)", existingPID)
 	}
 
-	myPID := os.Getpid()
-	if err := mgr.WritePID(myPID); err != nil {
-		return err
+	// Fork into background (double-fork to create proper daemon)
+	// First fork: child continues, parent exits
+	pid, err := syscall.ForkExec(os.Args[0], os.Args, &syscall.ProcAttr{
+		Env:   os.Environ(),
+		Dirs:  []string{"/"},
+		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
+		Sys:   &syscall.SysProcAttr{Setsid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fork daemon: %w", err)
 	}
 
-	fmt.Printf("[daemon] deployd started on %s (pid: %d)\n", addr, myPID)
-	fmt.Printf("[daemon] press Ctrl+C to stop, or run 'deployd stop'\n\n")
+	// Parent exits immediately — child becomes a daemon
+	fmt.Printf("[daemon] starting webhook server on %s\n", addr)
+	fmt.Printf("[daemon] deployd started as daemon (pid: %d)\n", pid)
+	fmt.Printf("[daemon] run 'deployd stop' to stop, 'deployd logs' to view logs\n")
+	return nil
+}
+
+// run is the actual daemon entry point, called by the forked child.
+// It blocks until SIGTERM/SIGINT, then cleans up.
+func run(configPath string) {
+	// 8. Start webhook HTTP server
+	addr := fmt.Sprintf("%s:%d", loadConfig(configPath).Server.Host, loadConfig(configPath).Server.Port)
+	http.HandleFunc("/webhook", webhook.Handle)
+
+	go func() {
+		fmt.Printf("[daemon] webhook server listening on %s\n", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "[daemon] webhook server error: %v\n", err)
+		}
+	}()
+
+	// 9. Write PID file
+	pidDir := filepath.Join(homeDir(configPath), defaultPidDir)
+	_ = os.MkdirAll(pidDir, 0755)
+	pidFile := filepath.Join(pidDir, "deployd.pid")
+	mgr := process.NewManager(pidFile)
+
+	// Re-check: prevent race if another instance started between fork and here
+	if mgr.Status() == "running" {
+		return
+	}
+
+	myPID := os.Getpid()
+	if err := mgr.WritePID(myPID); err != nil {
+		fmt.Fprintf(os.Stderr, "[daemon] failed to write PID file: %v\n", err)
+	}
+
+	fmt.Printf("[daemon] deployd running on %s (pid: %d)\n", addr, myPID)
 
 	// Block until termination signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	fmt.Printf("[daemon] received %s, shutting down...\n", sig)
+	<-sigCh
+	fmt.Printf("[daemon] received signal, shutting down...\n")
 
 	// Cleanup PID file on exit
 	_ = mgr.CleanupPID()
-	return nil
+}
+
+func loadConfig(path string) *config.AppConfig {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return &config.AppConfig{}
+	}
+	return cfg
 }

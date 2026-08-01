@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -194,9 +193,15 @@ func detectSource(r *http.Request) string {
 	return "unknown"
 }
 
+var configPath = filepath.Join("/", "tmp", "placeholder.yaml")
+
+// SetConfigPath sets the config file path for the webhook handler.
+func SetConfigPath(path string) {
+	configPath = path
+}
+
 func loadConfig() (*config.AppConfig, error) {
-	home, _ := os.UserHomeDir()
-	return config.Load(filepath.Join(home, "config.yaml"))
+	return config.Load(configPath)
 }
 
 func hasNotifications(cfg *config.AppConfig) bool {
