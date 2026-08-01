@@ -85,7 +85,7 @@ func Start(configPath string) error {
 	}()
 
 	// 9. Write PID file
-	pidDir := filepath.Join(os.Getenv("HOME"), defaultPidDir)
+	pidDir := filepath.Join(homeDir(), defaultPidDir)
 	_ = os.MkdirAll(pidDir, 0755)
 	pidFile := filepath.Join(pidDir, "deployd.pid")
 	mgr := process.NewManager(pidFile)
