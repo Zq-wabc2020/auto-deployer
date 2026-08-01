@@ -13,6 +13,8 @@ var rootCmd = &cobra.Command{
 	Long:  "A CLI tool that runs as a background daemon, receives webhooks, and automates service deployment.",
 }
 
+var configFile string
+
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

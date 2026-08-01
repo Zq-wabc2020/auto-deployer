@@ -9,6 +9,7 @@ import (
 )
 
 func init() {
+	deployCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	rootCmd.AddCommand(deployCmd)
 }
 
@@ -18,6 +19,6 @@ var deployCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stdout, "triggering deployment...")
-		return daemon.TriggerDeploy(args[0])
+		return daemon.TriggerDeploy(args[0], configFile)
 	},
 }

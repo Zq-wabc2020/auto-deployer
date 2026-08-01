@@ -14,8 +14,8 @@ import (
 const defaultPidDir = ".deployd/run"
 
 // Stop stops the deployd daemon.
-func Stop() error {
-	pidFile := filepath.Join(homeDir(), defaultPidDir, "deployd.pid")
+func Stop(configPath string) error {
+	pidFile := filepath.Join(homeDir(configPath), defaultPidDir, "deployd.pid")
 	mgr := process.NewManager(pidFile)
 
 	if mgr.Status() != "running" {
@@ -27,24 +27,27 @@ func Stop() error {
 }
 
 // Status shows the status of deployd and all configured services.
-func Status() error {
-	pidFile := filepath.Join(homeDir(), defaultPidDir, "deployd.pid")
+func Status(configPath string) error {
+	pidFile := filepath.Join(homeDir(configPath), defaultPidDir, "deployd.pid")
 	mgr := process.NewManager(pidFile)
 
 	fmt.Printf("deployd: %s\n", mgr.Status())
 
-	configPath := filepath.Join(homeDir(), "config.yaml")
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+	cfgPath := configPath
+	if cfgPath == "" {
+		cfgPath = filepath.Join(homeDir(configPath), "config.yaml")
+	}
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		return nil
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err
 	}
 
 	for _, svc := range cfg.Services {
-		svcPIDFile := filepath.Join(homeDir(), defaultPidDir, svc.Name+".pid")
+		svcPIDFile := filepath.Join(homeDir(configPath), defaultPidDir, svc.Name+".pid")
 		svcMgr := process.NewManager(svcPIDFile)
 		fmt.Printf("  %-30s %s\n", svc.Name, svcMgr.Status())
 	}
@@ -53,16 +56,29 @@ func Status() error {
 }
 
 // Logs prints the contents of a log file.
-func Logs(serviceName string) error {
-	logDir := filepath.Join(homeDir(), ".deployd", "logs")
-	var logFile string
-	if serviceName != "" {
-		logFile = filepath.Join(logDir, serviceName+".log")
-	} else {
-		logFile = filepath.Join(logDir, "deployd.log")
+func Logs(serviceName, configPath, logFile string) error {
+	if logFile != "" {
+		data, err := os.ReadFile(logFile)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Println("no logs found")
+				return nil
+			}
+			return err
+		}
+		fmt.Print(string(data))
+		return nil
 	}
 
-	data, err := os.ReadFile(logFile)
+	logDir := filepath.Join(homeDir(configPath), ".deployd", "logs")
+	var lf string
+	if serviceName != "" {
+		lf = filepath.Join(logDir, serviceName+".log")
+	} else {
+		lf = filepath.Join(logDir, "deployd.log")
+	}
+
+	data, err := os.ReadFile(lf)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("no logs found")
@@ -75,9 +91,12 @@ func Logs(serviceName string) error {
 }
 
 // TriggerDeploy manually triggers deployment for a service.
-func TriggerDeploy(serviceName string) error {
-	configPath := filepath.Join(homeDir(), "config.yaml")
-	cfg, err := config.Load(configPath)
+func TriggerDeploy(serviceName, configPath string) error {
+	cfgPath := configPath
+	if cfgPath == "" {
+		cfgPath = filepath.Join(homeDir(configPath), "config.yaml")
+	}
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -119,7 +138,7 @@ func TriggerDeploy(serviceName string) error {
 	return nil
 }
 
-func homeDir() string {
+func homeDir(configPath string) string {
 	h, _ := os.UserHomeDir()
 	return h
 }

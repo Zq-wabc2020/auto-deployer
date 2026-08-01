@@ -1,14 +1,19 @@
 package cmd
 
 import (
+
 	"github.com/auto-deployer/auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
+
 func init() {
-	logsCmd.Flags().StringVarP(&configFile, "file", "f", "", "log file path")
+	logsCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
+	logsCmd.Flags().StringVarP(&logFile, "file", "f", "", "log file path")
 	rootCmd.AddCommand(logsCmd)
 }
+
+var logFile string
 
 var logsCmd = &cobra.Command{
 	Use:   "logs [service_name]",
@@ -19,6 +24,6 @@ var logsCmd = &cobra.Command{
 		if len(args) > 0 {
 			name = args[0]
 		}
-		return daemon.Logs(name)
+		return daemon.Logs(name, configFile, logFile)
 	},
 }

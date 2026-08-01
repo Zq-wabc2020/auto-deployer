@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var configFile string
 
 func init() {
 	startCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
