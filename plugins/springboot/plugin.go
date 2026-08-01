@@ -30,7 +30,23 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 		return fmt.Errorf("build command is empty")
 	}
 
-	if err := build.Pull(svc.Workspace, svc.Repo.Branch); err != nil {
+	keyFile, _, _, err := build.EnsureSSHKey()
+	if err != nil {
+		return fmt.Errorf("failed to ensure SSH key: %w", err)
+	}
+	if err := build.Pull(svc.Workspace, svc.Repo.Branch, keyFile); err != nil {
+		if build.IsSSHAuthError(err) {
+			privKeyPath, _, pubKey, err := build.EnsureSSHKey()
+			if err == nil {
+				fmt.Printf("\n[warn] SSH authentication failed. Public key to configure on your Git platform:\n")
+				fmt.Printf("  %s\n\n", pubKey)
+				fmt.Printf("1. Add the above public key to your GitHub/Gitee account:\n")
+				fmt.Printf("   GitHub: Settings → SSH and GPG keys → New SSH key\n")
+				fmt.Printf("   Gitee:  设置 → 安全设置 → SSH公钥\n")
+				fmt.Printf("2. Key file: %s\n", privKeyPath)
+				fmt.Printf("3. Re-run: deployd deploy %s\n\n", svc.Name)
+			}
+		}
 		return fmt.Errorf("git pull failed: %w", err)
 	}
 

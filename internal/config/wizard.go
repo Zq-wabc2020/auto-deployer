@@ -47,7 +47,6 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 	name := ask("Service name", "")
 	svcType := ask("Service type (springboot)", "springboot")
 	repoURL := ask("Git repository URL", "")
-	repoToken := ask("Git access token (optional)", "")
 	branch := ask("Deploy branch", "main")
 	workspace := ask("Workspace directory", "")
 	buildCmd := ask("Build command", "mvn package -DskipTests")
@@ -83,7 +82,7 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 		Services: []ServiceConfig{{
 			Name:      name,
 			Type:      svcType,
-			Repo:      RepoConfig{URL: repoURL, Token: repoToken, Branch: branch},
+			Repo:      RepoConfig{URL: repoURL, Branch: branch},
 			Workspace: workspace,
 			Build:     BuildConfig{Command: buildCmd},
 			Run:       RunConfig{Command: runCmd},

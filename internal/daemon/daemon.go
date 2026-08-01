@@ -49,17 +49,31 @@ func Start(configPath string) error {
 		return fmt.Errorf("environment check failed")
 	}
 
-	// 5. Create workspace directories
+	// 5. Create workspace directories and ensure git config
 	for _, svc := range cfg.Services {
 		if err := os.MkdirAll(svc.Workspace, 0755); err != nil {
 			return fmt.Errorf("failed to create workspace %s: %w", svc.Workspace, err)
+		}
+		if err := build.EnsureGitConfig(svc.Workspace); err != nil {
+			fmt.Fprintf(os.Stderr, "[daemon] warning: failed to set git config in %s: %v\n", svc.Workspace, err)
 		}
 	}
 
 	// 6. Register Spring Boot plugin
 	springboot.New()
 
-	// 7. Start webhook HTTP server
+	// 7. Ensure SSH key exists and print setup instructions if needed
+	if privKeyPath, _, pubKey, err := build.EnsureSSHKey(); err != nil {
+		fmt.Fprintf(os.Stderr, "[daemon] warning: failed to check SSH key: %v\n", err)
+	} else {
+		fmt.Printf("[daemon] SSH key ready: %s\n", privKeyPath)
+		fmt.Printf("[daemon] Public key: %s\n", pubKey)
+		fmt.Printf("[daemon] Configure this public key on your GitHub/Gitee account.\n")
+		fmt.Printf("[daemon]   GitHub: Settings → SSH and GPG keys → New SSH key\n")
+		fmt.Printf("[daemon]   Gitee:  设置 → 安全设置 → SSH公钥\n\n")
+	}
+
+	// 8. Start webhook HTTP server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	http.HandleFunc("/webhook", webhook.Handle)
 
@@ -70,7 +84,7 @@ func Start(configPath string) error {
 		}
 	}()
 
-	// 8. Write PID file
+	// 9. Write PID file
 	pidDir := filepath.Join(os.Getenv("HOME"), defaultPidDir)
 	_ = os.MkdirAll(pidDir, 0755)
 	pidFile := filepath.Join(pidDir, "deployd.pid")

@@ -23,7 +23,6 @@ services:
     type: "springboot"
     repo:
       url: "https://github.com/user/repo.git"
-      token: "ghp_token123"
       branch: "main"
     workspace: "/opt/deployd/apps/test-service"
     build:
@@ -59,9 +58,6 @@ services:
 	}
 	if svc.Repo.URL != "https://github.com/user/repo.git" {
 		t.Errorf("expected repo URL 'https://github.com/user/repo.git', got '%s'", svc.Repo.URL)
-	}
-	if svc.Repo.Token != "ghp_token123" {
-		t.Errorf("expected repo token 'ghp_token123', got '%s'", svc.Repo.Token)
 	}
 	if svc.Repo.Branch != "main" {
 		t.Errorf("expected repo branch 'main', got '%s'", svc.Repo.Branch)

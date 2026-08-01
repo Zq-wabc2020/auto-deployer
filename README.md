@@ -27,6 +27,25 @@ go build -o deployd .
 sudo mv deployd /usr/local/bin/
 ```
 
+### 交叉编译（本地打 Linux 包）
+
+在 Mac 或其他平台直接编译 Linux 可执行文件，无需安装交叉工具链：
+
+```bash
+# Linux x86_64（最常见的阿里云 ECS 机型）
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o deployd-linux-amd64 .
+
+# Linux ARM64（阿里云倚天实例等）
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o deployd-linux-arm64 .
+```
+
+将生成的二进制文件上传到服务器部署：
+
+```bash
+scp deployd-linux-amd64 user@your-server:/usr/local/bin/deployd
+chmod +x /usr/local/bin/deployd
+```
+
 ### 从 Release 下载
 
 在 [Releases](https://github.com/Zq-wabc2020/auto-deployer/releases) 页面下载最新二进制文件并放到 PATH 中即可。
@@ -75,41 +94,118 @@ deployd stop
 cp config.yaml.example config.yaml
 ```
 
-`config.yaml` 主要配置项：
+## Webhook URL 配置
+
+服务启动后，Webhook 监听地址为：
+
+```
+http://<服务器IP>:<端口>/webhook
+```
+
+默认端口 `9527`，`server.host` 默认 `0.0.0.0`（监听所有网卡）。
+
+**GitHub 配置步骤：**
+1. 仓库 → Settings → Webhooks → Add webhook
+2. Payload URL 填入 `http://<你的服务器IP>:9527/webhook`
+3. Content type 选择 `application/json`
+4. Secret 可填（当前未启用签名验证，可留空）
+5. 选择 "Just the push event"
+6. 点击 Add webhook
+
+**Gitee 配置步骤：**
+1. 仓库 → 管理 → WebHooks → 添加 WebHook
+2. URL 填入 `http://<你的服务器IP>:9527/webhook`
+3. 选择触发事件：Push 事件
+4. 点击确认
+
+> **注意：** 服务器需要有公网 IP 或可通过内网穿透暴露该端口，否则 GitHub/Gitee 无法回调。
+
+## 配置项说明
+
+复制示例文件后进行编辑：
+
+```bash
+cp config.yaml.example config.yaml
+```
+
+### 配置项说明
+
+| 配置路径 | 说明 | 示例 |
+|----------|------|------|
+| `server.host` | 监听地址。`0.0.0.0` 监听所有网卡（允许外部访问），`127.0.0.1` 仅本机可访问 | `"0.0.0.0"` |
+| `server.port` | Webhook 监听端口 | `9527` |
+| `webhook.secret` | Webhook 签名验证密钥（预留字段，暂未启用） | `""` |
+| `smtp.host` | SMTP 邮件服务器地址 | `"smtp.qq.com"` |
+| `smtp.port` | SMTP 端口，`465` 为 SSL，`587` 为 STARTTLS | `465` |
+| `smtp.username` | 邮箱地址 | `"user@qq.com"` |
+| `smtp.token` | 邮箱授权码（非登录密码，需在邮箱设置中生成） | `"xxxxxxxx"` |
+| `smtp.tls` | 是否启用 TLS/SSL 连接 | `true` |
+| `notifications.to` | 部署通知邮件收件人列表 | `["admin@example.com"]` |
+| `services[].name` | 服务名称，用于日志和管理命令 | `"my-app"` |
+| `services[].type` | 服务类型，目前支持 `springboot` | `"springboot"` |
+| `services[].repo.url` | Git 仓库地址（HTTPS 格式，会自动转为 SSH） | `"https://github.com/user/repo.git"` |
+| `services[].repo.branch` | 部署分支 | `"main"` |
+| `services[].workspace` | 代码克隆和工作目录 | `"/opt/deployd/apps/my-app"` |
+| `services[].build.command` | 构建命令 | `"mvn package -DskipTests"` |
+| `services[].run.command` | 启动命令 | `"/opt/deployd/apps/my-app/start.sh"` |
+
+### 命令执行注意事项
+
+- **不经过 shell 执行**，`&&`、`||`、`|`、`;` 等 shell 操作符无效
+- **build 命令**在 `workspace` 目录下执行
+- **run 命令**在 `workspace` 目录下执行（即 `java -jar xxx.jar` 会在 workspace 下找 jar 文件）
+- 需要多步操作时，编写 shell 脚本并传入脚本路径：
 
 ```yaml
-server:
-  host: "0.0.0.0"
-  port: 9527
-
-webhook:
-  secret: ""  # 可选，用于 GitHub/Gitee Webhook 签名验证
-
-smtp:
-  host: "smtp.qq.com"
-  port: 465
-  username: "your-email@qq.com"
-  token: "your-smtp-authorization-code"
-  tls: true
-
-notifications:
-  to:
-    - "admin@example.com"
-
 services:
   - name: "my-app"
-    type: "springboot"
-    repo:
-      url: "https://github.com/user/repo.git"
-      branch: "main"
     workspace: "/opt/deployd/apps/my-app"
-    build:
-      command: "mvn package -DskipTests"
     run:
       command: "/opt/deployd/apps/my-app/start.sh"
 ```
 
-#### 邮件通知
+```bash
+# start.sh
+#!/bin/bash
+cd /opt/deployd/apps/my-app
+java -jar my-app.jar --spring.profiles.active=prod > logs/app.log 2>&1 &
+```
+
+### SSH 密钥认证
+
+deployd 使用 SSH 密钥认证访问 Git 仓库。启动时会自动检测 `~/.ssh/` 下是否有可用密钥（按 `id_ed25519`、`id_rsa` 等顺序查找），如果没有则自动生成。
+
+**使用流程：**
+
+1. **启动时自动生成密钥**（或直接使用已有的）：
+   ```bash
+   deployd start
+   ```
+   启动日志会输出公钥内容，例如：
+   ```
+   [daemon] SSH key ready: /home/user/.ssh/id_ed25519
+   [daemon] Public key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... deployd@auto-generated
+   ```
+
+2. **配置公钥到 Git 平台**：
+   - **GitHub**：Settings → SSH and GPG keys → New SSH key
+   - **Gitee**：设置 → 安全设置 → SSH公钥
+   - 将上面输出的公钥粘贴进去
+
+3. **如果拉取代码报认证错误**，deployd 会自动提示：
+   ```
+   [warn] SSH authentication failed. Public key to configure on your Git platform:
+     ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... deployd@auto-generated
+   
+   1. Add the above public key to your GitHub/Gitee account:
+      GitHub: Settings → SSH and GPG keys → New SSH key
+      Gitee:  设置 → 安全设置 → SSH公钥
+   2. Key file: /home/user/.ssh/id_ed25519
+   3. Re-run: deployd deploy <服务名>
+   ```
+
+
+### 邮件通知
 
 当配置了 `notifications.to` 后，每次部署完成后 deployd 会发送 HTML 邮件：
 
@@ -119,6 +215,44 @@ services:
 - 失败邮件包含错误信息和失败阶段，方便排查问题
 
 SMTP 端口 `465` 使用 SSL 连接，端口 `587` 使用 STARTTLS。
+
+### 完整配置示例
+
+```yaml
+# deployd global configuration
+server:
+  host: "0.0.0.0"    # 0.0.0.0 = 监听所有网卡；127.0.0.1 = 仅本机可访问
+  port: 9527         # Webhook 监听端口
+
+webhook:
+  secret: ""         # 预留字段，暂未启用签名验证
+
+# SMTP 邮件通知配置
+smtp:
+  host: "smtp.qq.com"
+  port: 465
+  username: "your-email@qq.com"
+  token: "your-smtp-authorization-code"  # 邮箱授权码，非登录密码
+  tls: true
+
+# 部署通知收件人
+notifications:
+  to:
+    - "admin@example.com"
+
+# 服务列表
+services:
+  - name: "my-springboot-app"
+    type: "springboot"
+    repo:
+      url: "https://github.com/user/repo.git"
+      branch: "main"
+    workspace: "/opt/deployd/apps/my-springboot-app"  # 代码克隆和工作目录
+    build:
+      command: "mvn package -DskipTests"   # 构建命令
+    run:
+      command: "/opt/deployd/apps/my-springboot-app/start.sh"  # 启动命令
+```
 
 ## 架构
 

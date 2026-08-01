@@ -7,16 +7,17 @@ import (
 	"strings"
 )
 
-// Clone clones a git repository into destDir. If token is provided, it is inserted
-// into HTTPS URLs for authentication.
-func Clone(repoURL, token, branch, destDir string) error {
+// Clone clones a git repository into destDir.
+// If keyFile is provided, GIT_SSH_COMMAND is set for SSH authentication.
+// The repoURL is automatically converted from HTTPS to SSH format if needed.
+func Clone(repoURL, keyFile, branch, destDir string) error {
 	if err := ensureDir(destDir); err != nil {
 		return err
 	}
 
 	url := repoURL
-	if token != "" {
-		url = insertToken(url, token)
+	if !strings.HasPrefix(url, "git@") && !strings.HasPrefix(url, "ssh://") {
+		url = HTTPSToSSH(url)
 	}
 
 	args := []string{"clone"}
@@ -28,6 +29,9 @@ func Clone(repoURL, token, branch, destDir string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if keyFile != "" {
+		cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
+	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git clone failed: %w", err)
 	}
@@ -35,22 +39,20 @@ func Clone(repoURL, token, branch, destDir string) error {
 }
 
 // Pull performs git pull origin <branch> in destDir.
-func Pull(destDir, branch string) error {
-	cmd := exec.Command("git", "pull", "origin", branch)
+// If keyFile is provided, GIT_SSH_COMMAND is set for SSH authentication.
+func Pull(destDir, branch, keyFile string) error {
+	args := []string{"pull", "origin", branch}
+	cmd := exec.Command("git", args...)
 	cmd.Dir = destDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if keyFile != "" {
+		cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
+	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git pull failed: %w", err)
 	}
 	return nil
-}
-
-func insertToken(url, token string) string {
-	if strings.HasPrefix(url, "https://") {
-		return strings.Replace(url, "https://", "https://"+token+"@", 1)
-	}
-	return url
 }
 
 func ensureDir(dir string) error {

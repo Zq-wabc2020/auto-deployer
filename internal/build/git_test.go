@@ -49,7 +49,7 @@ func TestPull_UpdatesWorkingDir(t *testing.T) {
 	_ = runCmd(setupDir, "git", "commit", "-m", "second")
 	_ = runCmd(setupDir, "git", "push", bareDir, "main")
 
-	err := Pull(destDir, "main")
+	err := Pull(destDir, "main", "")
 	if err != nil {
 		t.Fatal(err)
 	}

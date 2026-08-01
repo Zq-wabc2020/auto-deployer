@@ -30,7 +30,6 @@ type NotificationConfig struct {
 
 type RepoConfig struct {
     URL    string `yaml:"url"`
-    Token  string `yaml:"token"`
     Branch string `yaml:"branch"`
 }
 
