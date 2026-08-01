@@ -13,43 +13,18 @@ type environmentCheck struct {
 	cmd  string
 }
 
-var toolSearchPaths = []string{
-	"",
-	"/usr/local/bin",
-	"/opt/maven/bin",
-	"/opt/homebrew/bin",
-	"/snap/bin",
-}
-
 var requiredTools = []environmentCheck{
 	{name: "git", cmd: "git"},
 	{name: "java", cmd: "java"},
 	{name: "mvn", cmd: "mvn"},
 }
 
-// CheckEnvironment verifies that all required tools are installed and available on PATH,
-// or at a common install location as fallback.
+// CheckEnvironment verifies that all required tools are installed and available on PATH.
 func CheckEnvironment() []error {
 	var errs []error
 	for _, tool := range requiredTools {
-		found := false
-		if _, err := exec.LookPath(tool.cmd); err == nil {
-			found = true
-		}
-		if !found {
-			for _, p := range toolSearchPaths {
-				if p == "" {
-					continue
-				}
-				path := filepath.Join(p, tool.cmd)
-				if _, err := os.Stat(path); err == nil {
-					found = true
-					break
-				}
-			}
-		}
-		if !found {
-			errs = append(errs, fmt.Errorf("%s is not installed or not in PATH: %w", tool.name, tool.cmd))
+		if _, err := exec.LookPath(tool.cmd); err != nil {
+			errs = append(errs, fmt.Errorf("%s is not installed or not in PATH: %w", tool.name, err))
 		}
 	}
 	return errs
