@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
@@ -21,9 +19,8 @@ const defaultConfigName = "config.yaml"
 const pidDirName = ".deployd/run"
 const daemonLogName = "deployd.log"
 
-// Start loads config, validates it, checks the environment, and launches the webhook server.
-// On Linux, it forks into a detached daemon process and returns immediately.
-// On other platforms, it blocks until a termination signal is received.
+// Start loads config, validates it, checks the environment, starts the webhook server,
+// and blocks until a termination signal is received.
 func Start(configPath string) error {
 	if configPath == "" {
 		home, _ := os.UserHomeDir()
@@ -81,85 +78,33 @@ func Start(configPath string) error {
 		fmt.Printf("[daemon]   Gitee:  设置 → 安全设置 → SSH公钥\n\n")
 	}
 
-	// 8. Check if already running
+	// 8. Setup PID file and log
 	pidDir := filepath.Join(homeDir(configPath), pidDirName)
 	_ = os.MkdirAll(pidDir, 0755)
 	pidFile := filepath.Join(pidDir, "deployd.pid")
 	mgr := process.NewManager(pidFile)
 
-	if mgr.Status() == "running" {
-		existingPID, _ := mgr.ReadPID()
-		return fmt.Errorf("deployd is already running (pid: %d)", existingPID)
-	}
-
-	// On Linux: fork into background daemon process
-	if runtime.GOOS == "linux" {
-		return startDaemon(configPath, pidFile)
-	}
-
-	// On other platforms (macOS, etc): run in foreground
-	return runForeground(configPath, pidFile, mgr)
-}
-
-// startDaemon forks a child process, detaches it from the terminal, and exits the parent.
-func startDaemon(configPath, pidFile string) error {
-	if os.Getenv("DEPLOYD_DAEMON_CHILD") == "1" {
-		// This is the child process, run in foreground
-		return runForeground(configPath, pidFile, process.NewManager(pidFile))
-	}
-
-	// Build the command to re-run self with the same arguments
-	selfPath, _ := os.Executable()
-	args := []string{"start", "-c", configPath, "--daemon-child"}
-	env := os.Environ()
-	env = append(env, "DEPLOYD_DAEMON_CHILD=1")
-
-	cmd := exec.Command(selfPath, args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-		Setsid:  true,
-	}
-
-	// Redirect stdout/stderr to log file inside the child
-	logPath := filepath.Join(homeDir(configPath), ".deployd", daemonLogName)
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-		return fmt.Errorf("failed to create log dir: %w", err)
-	}
+	logDir := filepath.Join(homeDir(configPath), ".deployd")
+	_ = os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, daemonLogName)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+	os.Stdout = logFile
+	os.Stderr = logFile
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start daemon: %w", err)
+	// 9. Check if already running
+	if mgr.Status() == "running" {
+		existingPID, _ := mgr.ReadPID()
+		os.Stdout = origStdout
+		os.Stderr = origStderr
+		return fmt.Errorf("deployd is already running (pid: %d)", existingPID)
 	}
 
-	// Parent exits immediately
-	fmt.Printf("[daemon] daemon process started (pid: %d)\n", cmd.Process.Pid)
-	fmt.Printf("[daemon] logs: %s\n", logPath)
-	fmt.Printf("[daemon] use 'deployd status' to check, 'deployd stop' to stop\n")
-	return nil
-}
-
-// runForeground runs the server and blocks until termination (used on macOS).
-func runForeground(configPath, pidFile string, mgr *process.Manager) error {
-	myPID := os.Getpid()
-	if err := mgr.WritePID(myPID); err != nil {
-		return err
-	}
-
-	runServer(configPath, pidFile)
-	return nil
-}
-
-// runServer runs the webhook server and blocks until termination signal.
-func runServer(configPath, pidFile string) {
-	cfg, _ := config.Load(configPath)
+	// 10. Start webhook server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	webhook.SetConfigPath(configPath)
 
@@ -172,13 +117,27 @@ func runServer(configPath, pidFile string) {
 		}
 	}()
 
-	// Block until termination signal
+	// 11. Write PID and print status to original stdout
+	os.Stdout = origStdout
+	os.Stderr = origStderr
+
+	myPID := os.Getpid()
+	if err := mgr.WritePID(myPID); err != nil {
+		return err
+	}
+
+	fmt.Printf("[daemon] deployd started on %s (pid: %d)\n", addr, myPID)
+	fmt.Printf("[daemon] logs: %s\n", logPath)
+	fmt.Printf("[daemon] press Ctrl+C to stop, or run 'deployd stop'\n\n")
+
+	// 12. Block until termination signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	fmt.Printf("[daemon] received %s, shutting down...\n", sig)
 
-	// Cleanup PID file on exit
-	mgr := process.NewManager(pidFile)
+	// Cleanup
 	_ = mgr.CleanupPID()
+	_ = logFile.Close()
+	return nil
 }
