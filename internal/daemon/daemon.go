@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
@@ -17,9 +19,11 @@ import (
 
 const defaultConfigName = "config.yaml"
 const pidDirName = ".deployd/run"
+const daemonLogName = "deployd.log"
 
 // Start loads config, validates it, checks the environment, and launches the webhook server.
-// On Linux, it forks into background and returns immediately. On macOS, it blocks.
+// On Linux, it forks into a detached daemon process and returns immediately.
+// On other platforms, it blocks until a termination signal is received.
 func Start(configPath string) error {
 	if configPath == "" {
 		home, _ := os.UserHomeDir()
@@ -77,7 +81,7 @@ func Start(configPath string) error {
 		fmt.Printf("[daemon]   Gitee:  设置 → 安全设置 → SSH公钥\n\n")
 	}
 
-	// 8. Write PID file and start server
+	// 8. Check if already running
 	pidDir := filepath.Join(homeDir(configPath), pidDirName)
 	_ = os.MkdirAll(pidDir, 0755)
 	pidFile := filepath.Join(pidDir, "deployd.pid")
@@ -88,19 +92,60 @@ func Start(configPath string) error {
 		return fmt.Errorf("deployd is already running (pid: %d)", existingPID)
 	}
 
-	// Start the actual daemon logic (webhook server + signal blocking)
-	go runServer(configPath, pidFile)
+	// On Linux: fork into background daemon process
+	if runtime.GOOS == "linux" {
+		return startDaemon(configPath, pidFile)
+	}
 
-	// Write our PID
+	// On other platforms (macOS, etc): run in foreground
+	return runForeground(configPath, pidFile, mgr)
+}
+
+// startDaemon forks a child process, detaches it from the terminal, and exits the parent.
+func startDaemon(configPath, pidFile string) error {
+	// Build the command to re-run self with the same arguments
+	selfPath, _ := os.Executable()
+	args := []string{"start", "-c", configPath, "--daemon-child"}
+
+	cmd := exec.Command(selfPath, args...)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+		Setsid:  true,
+	}
+
+	// Redirect stdout/stderr to log file inside the child
+	logPath := filepath.Join(homeDir(configPath), ".deployd", daemonLogName)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		return fmt.Errorf("failed to create log dir: %w", err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %w", err)
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+
+	// Parent exits immediately
+	fmt.Printf("[daemon] daemon process started (pid: %d)\n", cmd.Process.Pid)
+	fmt.Printf("[daemon] logs: %s\n", logPath)
+	fmt.Printf("[daemon] use 'deployd status' to check, 'deployd stop' to stop\n")
+	return nil
+}
+
+// runForeground runs the server and blocks until termination (used on macOS).
+func runForeground(configPath, pidFile string, mgr *process.Manager) error {
 	myPID := os.Getpid()
 	if err := mgr.WritePID(myPID); err != nil {
 		return err
 	}
 
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	fmt.Printf("[daemon] deployd started on %s (pid: %d)\n", addr, myPID)
-	fmt.Printf("[daemon] press Ctrl+C to stop, or run 'deployd stop'\n\n")
-
+	runServer(configPath, pidFile)
 	return nil
 }
 
