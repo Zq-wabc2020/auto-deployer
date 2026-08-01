@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -101,5 +103,15 @@ func Start(configPath string) error {
 	}
 
 	fmt.Printf("[daemon] deployd started on %s (pid: %d)\n", addr, myPID)
+	fmt.Printf("[daemon] press Ctrl+C to stop, or run 'deployd stop'\n\n")
+
+	// Block until termination signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+	fmt.Printf("[daemon] received %s, shutting down...\n", sig)
+
+	// Cleanup PID file on exit
+	_ = mgr.CleanupPID()
 	return nil
 }
