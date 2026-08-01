@@ -16,8 +16,10 @@ import (
 )
 
 const defaultConfigName = "config.yaml"
+const pidDirName = ".deployd/run"
 
 // Start loads config, validates it, checks the environment, and launches the webhook server.
+// On Linux, it forks into background and returns immediately. On macOS, it blocks.
 func Start(configPath string) error {
 	if configPath == "" {
 		home, _ := os.UserHomeDir()
@@ -75,19 +77,8 @@ func Start(configPath string) error {
 		fmt.Printf("[daemon]   Gitee:  设置 → 安全设置 → SSH公钥\n\n")
 	}
 
-	// 8. Start webhook HTTP server
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	http.HandleFunc("/webhook", webhook.Handle)
-
-	go func() {
-		fmt.Printf("[daemon] starting webhook server on %s\n", addr)
-		if err := http.ListenAndServe(addr, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "[daemon] webhook server error: %v\n", err)
-		}
-	}()
-
-	// 9. Write PID file
-	pidDir := filepath.Join(homeDir(configPath), defaultPidDir)
+	// 8. Write PID file and start server
+	pidDir := filepath.Join(homeDir(configPath), pidDirName)
 	_ = os.MkdirAll(pidDir, 0755)
 	pidFile := filepath.Join(pidDir, "deployd.pid")
 	mgr := process.NewManager(pidFile)
@@ -97,13 +88,36 @@ func Start(configPath string) error {
 		return fmt.Errorf("deployd is already running (pid: %d)", existingPID)
 	}
 
+	// Start the actual daemon logic (webhook server + signal blocking)
+	go runServer(configPath, pidFile)
+
+	// Write our PID
 	myPID := os.Getpid()
 	if err := mgr.WritePID(myPID); err != nil {
 		return err
 	}
 
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	fmt.Printf("[daemon] deployd started on %s (pid: %d)\n", addr, myPID)
 	fmt.Printf("[daemon] press Ctrl+C to stop, or run 'deployd stop'\n\n")
+
+	return nil
+}
+
+// runServer runs the webhook server and blocks until termination signal.
+func runServer(configPath, pidFile string) {
+	cfg, _ := config.Load(configPath)
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	webhook.SetConfigPath(configPath)
+
+	http.HandleFunc("/webhook", webhook.Handle)
+
+	go func() {
+		fmt.Printf("[daemon] starting webhook server on %s\n", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "[daemon] webhook server error: %v\n", err)
+		}
+	}()
 
 	// Block until termination signal
 	sigCh := make(chan os.Signal, 1)
@@ -112,6 +126,6 @@ func Start(configPath string) error {
 	fmt.Printf("[daemon] received %s, shutting down...\n", sig)
 
 	// Cleanup PID file on exit
+	mgr := process.NewManager(pidFile)
 	_ = mgr.CleanupPID()
-	return nil
 }
