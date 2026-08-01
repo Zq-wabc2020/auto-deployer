@@ -103,6 +103,8 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 			cfg.SMTP.Username,
 			cfg.SMTP.Token,
 			cfg.SMTP.TLS,
+			cfg.Resend.APIKey,
+			cfg.Resend.From,
 			cfg.Notifications.To,
 		)
 		go func() {

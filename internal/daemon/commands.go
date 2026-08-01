@@ -135,6 +135,8 @@ func buildNotifier(cfg *config.AppConfig) *notify.Notifier {
 		cfg.SMTP.Username,
 		cfg.SMTP.Token,
 		cfg.SMTP.TLS,
+		cfg.Resend.APIKey,
+		cfg.Resend.From,
 		cfg.Notifications.To,
 	)
 }

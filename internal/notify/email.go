@@ -1,48 +1,78 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/smtp"
 	"strings"
 	"time"
 )
 
-// Notifier sends email notifications via SMTP.
+// Notifier sends email notifications.
+// It supports two providers: SMTP and Resend (HTTP API).
+// The provider is selected based on configuration at construction time.
 type Notifier struct {
+	provider string // "smtp" or "resend"
+
+	// SMTP fields
 	smtpHost string
 	smtpPort int
 	username string
 	token    string
 	tls      bool
-	to       []string
+
+	// Resend fields
+	resendToken string
+	resendFrom  string
+
+	// Common fields
+	to []string
 }
 
-// New creates a Notifier from SMTP config and notification recipients.
-func New(host string, port int, username, token string, tls bool, to []string) *Notifier {
+// New creates a Notifier.
+// If resend.APIKey is set, it uses Resend API; otherwise falls back to SMTP.
+func New(smtpHost string, smtpPort int, smtpUsername, smtpToken string, smtpTLS bool,
+	resendToken, resendFrom string, to []string) *Notifier {
+	provider := "smtp"
+	if resendToken != "" {
+		provider = "resend"
+	}
 	return &Notifier{
-		smtpHost: host,
-		smtpPort: port,
-		username: username,
-		token:    token,
-		tls:      tls,
+		provider: provider,
+		smtpHost: smtpHost,
+		smtpPort: smtpPort,
+		username: smtpUsername,
+		token:    smtpToken,
+		tls:      smtpTLS,
+		resendToken: resendToken,
+		resendFrom:  resendFrom,
 		to:       to,
 	}
 }
 
 // Send emails the given subject and HTML body to all configured recipients.
 func (n *Notifier) Send(_ context.Context, subject, body string) error {
-	recipients := make([]string, len(n.to))
-	copy(recipients, n.to)
+	switch n.provider {
+	case "resend":
+		return n.sendResend(subject, body)
+	default:
+		return n.sendSMTP(subject, body)
+	}
+}
 
+// sendSMTP sends via SMTP (SSL/TLS).
+func (n *Notifier) sendSMTP(subject, body string) error {
+	recipients := n.to
 	auth := smtp.PlainAuth("", n.username, n.username, n.token)
 	addr := fmt.Sprintf("%s:%d", n.smtpHost, n.smtpPort)
 
 	msg := n.buildMessage(subject, body)
 
 	if n.tls || n.smtpPort == 465 {
-		// SSL connection (port 465) or STARTTLS
 		tlsConf := &tls.Config{InsecureSkipVerify: false}
 		conn, err := tls.Dial("tcp", addr, tlsConf)
 		if err != nil {
@@ -80,10 +110,56 @@ func (n *Notifier) Send(_ context.Context, subject, body string) error {
 		return client.Quit()
 	}
 
-	// Plain SMTP with STARTTLS
 	if err := smtp.SendMail(addr, auth, n.username, recipients, []byte(msg)); err != nil {
 		return fmt.Errorf("send email: %w", err)
 	}
+	return nil
+}
+
+// sendResend sends via Resend HTTP API.
+func (n *Notifier) sendResend(subject, body string) error {
+	recipients := n.to
+
+	reqBody := map[string]interface{}{
+		"from":    n.resendFrom,
+		"to":      recipients,
+		"subject": subject,
+		"html":    body,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal resend request: %w", err)
+	}
+
+	url := "https://api.resend.com/emails"
+	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonData))
+	if err != nil {
+		return fmt.Errorf("create resend request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+n.resendToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("resend request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		buf := new(bytes.Buffer)
+		buf.ReadFrom(resp.Body)
+		return fmt.Errorf("resend API error: status=%d body=%s", resp.StatusCode, buf.String())
+	}
+
 	return nil
 }
 

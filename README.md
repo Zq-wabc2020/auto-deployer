@@ -135,11 +135,13 @@ cp config.yaml.example config.yaml
 | `server.host` | 监听地址。`0.0.0.0` 监听所有网卡（允许外部访问），`127.0.0.1` 仅本机可访问 | `"0.0.0.0"` |
 | `server.port` | Webhook 监听端口 | `9527` |
 | `webhook.secret` | Webhook 签名验证密钥（预留字段，暂未启用） | `""` |
-| `smtp.host` | SMTP 邮件服务器地址 | `"smtp.qq.com"` |
+| `smtp.host` | SMTP 邮件服务器地址（Resend 方式时不需要） | `"smtp.qq.com"` |
 | `smtp.port` | SMTP 端口，`465` 为 SSL，`587` 为 STARTTLS | `465` |
 | `smtp.username` | 邮箱地址 | `"user@qq.com"` |
 | `smtp.token` | 邮箱授权码（非登录密码，需在邮箱设置中生成） | `"xxxxxxxx"` |
 | `smtp.tls` | 是否启用 TLS/SSL 连接 | `true` |
+| `resend.api_key` | Resend API Key（[获取地址](https://resend.com/api-keys)） | `"re_xxx"` |
+| `resend.from` | 发件人地址 | `"deployd <onboarding@example.com>"` |
 | `notifications.to` | 部署通知邮件收件人列表 | `["admin@example.com"]` |
 | `services[].name` | 服务名称，用于日志和管理命令 | `"my-app"` |
 | `services[].type` | 服务类型，目前支持 `springboot` | `"springboot"` |
@@ -207,14 +209,38 @@ deployd 使用 SSH 密钥认证访问 Git 仓库。启动时会自动检测 `~/.
 
 ### 邮件通知
 
-当配置了 `notifications.to` 后，每次部署完成后 deployd 会发送 HTML 邮件：
+当配置了 `notifications.to` 后，每次部署完成后 deployd 会发送 HTML 邮件。
 
+支持两种发送方式：
+
+**方式一：SMTP（兼容 QQ邮箱、网易邮箱、自建邮件服务器等）**
+
+```yaml
+smtp:
+  host: "smtp.qq.com"
+  port: 465
+  username: "your-email@qq.com"
+  token: "your-smtp-authorization-code"  # 邮箱授权码，非登录密码
+  tls: true
+```
+
+SMTP 端口 `465` 使用 SSL 连接，端口 `587` 使用 STARTTLS。
+
+**方式二：Resend API（推荐，无需配置 SMTP）**
+
+```yaml
+resend:
+  api_key: "re_xxxxxxxxxxxxxxxxxxxxx"   # 在 https://resend.com/api-keys 获取
+  from: "deployd <onboarding@your-domain.com>"  # 需要先配置发件域名
+```
+
+> 两种方式二选一，优先使用 Resend。
+
+邮件内容：
 - **收件人**：配置的 `to` 列表 + Webhook Payload 中的 Git 提交者邮箱
 - **成功主题**：`[deployd] ✅ 部署成功: <服务名>`
 - **失败主题**：`[deployd] ❌ 部署失败: <服务名>`
 - 失败邮件包含错误信息和失败阶段，方便排查问题
-
-SMTP 端口 `465` 使用 SSL 连接，端口 `587` 使用 STARTTLS。
 
 ### 完整配置示例
 
@@ -227,13 +253,20 @@ server:
 webhook:
   secret: ""         # 预留字段，暂未启用签名验证
 
-# SMTP 邮件通知配置
+# SMTP 邮件通知配置（Resend 方式时不需要）
 smtp:
   host: "smtp.qq.com"
   port: 465
   username: "your-email@qq.com"
   token: "your-smtp-authorization-code"  # 邮箱授权码，非登录密码
   tls: true
+
+# Resend API 配置（替代 SMTP，发送邮件通过 Resend HTTP API）
+# 获取 API Key: https://resend.com/api-keys
+# 配置发件域名: https://resend.com/domains
+resend:
+  api_key: ""
+  from: "deployd <onboarding@your-domain.com>"
 
 # 部署通知收件人
 notifications:

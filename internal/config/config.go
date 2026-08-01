@@ -24,6 +24,11 @@ type SMTPConfig struct {
     TLS      bool   `yaml:"tls"`
 }
 
+type ResendConfig struct {
+    APIKey string `yaml:"api_key"`
+    From   string `yaml:"from"`
+}
+
 type NotificationConfig struct {
     To []string `yaml:"to"`
 }
@@ -54,6 +59,7 @@ type AppConfig struct {
     Server        ServerConfig       `yaml:"server"`
     Webhook       WebhookConfig      `yaml:"webhook"`
     SMTP          SMTPConfig         `yaml:"smtp"`
+    Resend        ResendConfig       `yaml:"resend"`
     Notifications NotificationConfig `yaml:"notifications"`
     Services      []ServiceConfig    `yaml:"services"`
 }

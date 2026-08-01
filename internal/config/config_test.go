@@ -221,3 +221,33 @@ services: []
 		t.Errorf("expected second recipient 'ops@example.com', got '%s'", cfg.Notifications.To[1])
 	}
 }
+
+func TestParseResendConfig(t *testing.T) {
+	yamlContent := []byte(`
+server:
+  host: "0.0.0.0"
+  port: 9527
+
+resend:
+  api_key: "re_test-key-123"
+  from: "deployd <onboarding@example.com>"
+
+notifications:
+  to:
+    - "admin@example.com"
+
+services: []
+`)
+
+	var cfg AppConfig
+	if err := yaml.Unmarshal(yamlContent, &cfg); err != nil {
+		t.Fatalf("failed to unmarshal config: %v", err)
+	}
+
+	if cfg.Resend.APIKey != "re_test-key-123" {
+		t.Errorf("expected resend api_key 're_test-key-123', got '%s'", cfg.Resend.APIKey)
+	}
+	if cfg.Resend.From != "deployd <onboarding@example.com>" {
+		t.Errorf("expected resend from 'deployd <onboarding@example.com>', got '%s'", cfg.Resend.From)
+	}
+}
