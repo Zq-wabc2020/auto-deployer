@@ -130,7 +130,10 @@ func Start(configPath string) error {
 	fmt.Printf("[daemon] logs: %s\n", logPath)
 	fmt.Printf("[daemon] press Ctrl+C to stop, or run 'deployd stop'\n\n")
 
-	// 12. Block until termination signal
+	// 12. Ignore SIGHUP so daemon survives SSH disconnect
+	signal.Ignore(syscall.SIGHUP)
+
+	// Block until termination signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
