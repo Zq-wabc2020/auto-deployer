@@ -12,8 +12,11 @@ import (
 
 func init() {
 	startCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
+	startCmd.Flags().BoolVar(&daemonChild, "daemon-child", false, "internal: run as daemon child process (do not fork)")
 	rootCmd.AddCommand(startCmd)
 }
+
+var daemonChild bool
 
 var startCmd = &cobra.Command{
 	Use:   "start",
@@ -28,7 +31,9 @@ var startCmd = &cobra.Command{
 		if err := daemon.Start(path); err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stdout, "deployd started successfully")
+		if !daemonChild {
+			fmt.Fprintln(os.Stdout, "deployd started successfully")
+		}
 		return nil
 	},
 }

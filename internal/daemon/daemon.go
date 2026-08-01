@@ -103,13 +103,21 @@ func Start(configPath string) error {
 
 // startDaemon forks a child process, detaches it from the terminal, and exits the parent.
 func startDaemon(configPath, pidFile string) error {
+	if os.Getenv("DEPLOYD_DAEMON_CHILD") == "1" {
+		// This is the child process, run in foreground
+		return runForeground(configPath, pidFile, process.NewManager(pidFile))
+	}
+
 	// Build the command to re-run self with the same arguments
 	selfPath, _ := os.Executable()
 	args := []string{"start", "-c", configPath, "--daemon-child"}
+	env := os.Environ()
+	env = append(env, "DEPLOYD_DAEMON_CHILD=1")
 
 	cmd := exec.Command(selfPath, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 		Setsid:  true,
