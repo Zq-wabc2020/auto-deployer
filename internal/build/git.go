@@ -11,9 +11,25 @@ import (
 // Clone clones a git repository into destDir.
 // If keyFile is provided, GIT_SSH_COMMAND is set for SSH authentication.
 // The repoURL is automatically converted from HTTPS to SSH format if needed.
+// The destDir must be empty or not exist; it will be created if needed.
 func Clone(repoURL, keyFile, branch, destDir string) error {
-	if err := ensureDir(destDir); err != nil {
-		return err
+	// Ensure destDir is empty
+	if info, err := os.Stat(destDir); err == nil && info.IsDir() {
+		entries, err := os.ReadDir(destDir)
+		if err != nil {
+			return fmt.Errorf("failed to read directory: %w", err)
+		}
+		if len(entries) > 0 {
+			// Directory exists and is not empty, remove all contents
+			for _, entry := range entries {
+				path := filepath.Join(destDir, entry.Name())
+				if err := os.RemoveAll(path); err != nil {
+					return fmt.Errorf("failed to remove %s: %w", entry.Name(), err)
+				}
+			}
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat directory: %w", err)
 	}
 
 	url := repoURL
