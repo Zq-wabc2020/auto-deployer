@@ -11,6 +11,7 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/notify"
+	"github.com/auto-deployer/auto-deployer/plugins/springboot"
 )
 
 // GitHubPushPayload represents a GitHub push webhook event.
@@ -49,6 +50,14 @@ type GitSignature struct {
 type GitHubCommit struct {
 	Author    GitSignature `json:"author"`
 	Committer GitSignature `json:"committer"`
+}
+
+// Deployer handles the build and deploy logic for a service.
+type Deployer interface {
+	Build(ctx context.Context, svc *config.ServiceConfig) error
+	Start(ctx context.Context, svc *config.ServiceConfig) error
+	Stop(ctx context.Context, svc *config.ServiceConfig) error
+	Status(ctx context.Context, svc *config.ServiceConfig) (string, error)
 }
 
 // Handle is the HTTP handler for webhook events from both GitHub and Gitee.
@@ -108,15 +117,88 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		)
 		go func() {
 			ctx := context.Background()
-			err := notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "running", "")
-			if err != nil {
-				fmt.Printf("[notify] failed to send notification: %v\n", err)
-			}
+			_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "running", "")
 		}()
 	}
 
-	// TODO: dispatch to plugin for build + restart
-	_ = matched
+	// Dispatch to plugin for build + restart
+	ctx := context.Background()
+	var deployer Deployer
+	switch matched.Type {
+	case "springboot":
+		deployer = springboot.New()
+	default:
+		fmt.Printf("[webhook] unknown service type: %s\n", matched.Type)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+		return
+	}
+
+	// Build
+	fmt.Printf("[deploy] building %s...\n", matched.Name)
+	if err := deployer.Build(ctx, matched); err != nil {
+		fmt.Printf("[deploy] build failed: %v\n", err)
+		if hasNotifications(cfg) {
+			go func() {
+				_ = notify.New(
+					cfg.SMTP.Host,
+					cfg.SMTP.Port,
+					cfg.SMTP.Username,
+					cfg.SMTP.Token,
+					cfg.SMTP.TLS,
+					cfg.Resend.APIKey,
+					cfg.Resend.From,
+					cfg.Notifications.To,
+				).NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
+			}()
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+		return
+	}
+
+	// Stop old instance
+	fmt.Printf("[deploy] stopping %s...\n", matched.Name)
+	_ = deployer.Stop(ctx, matched)
+
+	// Start new instance
+	fmt.Printf("[deploy] starting %s...\n", matched.Name)
+	if err := deployer.Start(ctx, matched); err != nil {
+		fmt.Printf("[deploy] start failed: %v\n", err)
+		if hasNotifications(cfg) {
+			go func() {
+				_ = notify.New(
+					cfg.SMTP.Host,
+					cfg.SMTP.Port,
+					cfg.SMTP.Username,
+					cfg.SMTP.Token,
+					cfg.SMTP.TLS,
+					cfg.Resend.APIKey,
+					cfg.Resend.From,
+					cfg.Notifications.To,
+				).NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
+			}()
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+		return
+	}
+
+	fmt.Printf("[deploy] %s deployed successfully\n", matched.Name)
+	if hasNotifications(cfg) {
+		go func() {
+			_ = notify.New(
+				cfg.SMTP.Host,
+				cfg.SMTP.Port,
+				cfg.SMTP.Username,
+				cfg.SMTP.Token,
+				cfg.SMTP.TLS,
+				cfg.Resend.APIKey,
+				cfg.Resend.From,
+				cfg.Notifications.To,
+			).NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "success", "")
+		}()
+	}
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
