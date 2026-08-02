@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
-	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
@@ -69,13 +68,7 @@ func forkToBackground(configPath string) error {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 
-	// Wait briefly to check if child exits immediately
-	time.Sleep(500 * time.Millisecond)
-	if _, waitErr := cmd.Process.Wait(); waitErr != nil {
-		_ = logFile.Close()
-		return fmt.Errorf("daemon failed to start (check %s): %w", logPath, waitErr)
-	}
-
+	// Don't wait - daemon runs in background
 	fmt.Printf("daemon started in background (pid: %d)\n", cmd.Process.Pid)
 	fmt.Printf("logs: %s\n", logPath)
 	fmt.Printf("use 'deployd status' or 'deployd stop' to manage\n")
