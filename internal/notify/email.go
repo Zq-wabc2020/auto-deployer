@@ -164,21 +164,11 @@ func (n *Notifier) sendResend(subject, body string) error {
 }
 
 // NotifyDeployResult assembles and sends a deployment result email.
+// Recipients are set by buildNotifier: authorEmail is the default recipient,
+// notifications.to are additional recipients.
 func (n *Notifier) NotifyDeployResult(ctx context.Context, svcName, branch, authorEmail, status, errMsg string) error {
 	subject := n.buildSubject(svcName, status)
 	body := n.buildBody(svcName, branch, authorEmail, status, errMsg)
-
-	// Temporarily include author email for delivery
-	allRecipients := make([]string, len(n.to))
-	copy(allRecipients, n.to)
-	if authorEmail != "" {
-		allRecipients = append(allRecipients, authorEmail)
-	}
-
-	originalTo := n.to
-	n.to = allRecipients
-	defer func() { n.to = originalTo }()
-
 	return n.Send(ctx, subject, body)
 }
 
