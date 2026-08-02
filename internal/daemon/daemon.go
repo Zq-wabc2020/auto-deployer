@@ -117,10 +117,7 @@ func Start(configPath string) error {
 		}
 	}()
 
-	// 11. Write PID and print status to original stdout
-	os.Stdout = origStdout
-	os.Stderr = origStderr
-
+	// 11. Write PID
 	myPID := os.Getpid()
 	if err := mgr.WritePID(myPID); err != nil {
 		return err
@@ -132,7 +129,6 @@ func Start(configPath string) error {
 
 	// 12. Ignore SIGHUP so daemon survives SSH disconnect
 	signal.Ignore(syscall.SIGHUP)
-	fmt.Printf("[daemon] debug: SIGHUP ignored, about to block\n")
 
 	// Block until termination signal
 	sigCh := make(chan os.Signal, 1)
