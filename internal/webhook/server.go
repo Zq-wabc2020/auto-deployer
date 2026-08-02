@@ -11,6 +11,7 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/deploy"
 	"github.com/auto-deployer/auto-deployer/internal/notify"
 	"github.com/auto-deployer/auto-deployer/plugins/springboot"
 )
@@ -104,9 +105,9 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	result.ServiceName = matched.Name
 	fmt.Printf("[webhook] matched service: %s\n", result.ServiceName)
 
-	// Dispatch to plugin for build + restart
+	// Dispatch to orchestrator for build + restart
 	ctx := context.Background()
-	var deployer Deployer
+	var deployer deploy.Deployer
 	switch matched.Type {
 	case "springboot":
 		deployer = springboot.New()
@@ -117,45 +118,12 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build
-	fmt.Printf("[deploy] building %s...\n", matched.Name)
-	if err := deployer.Build(ctx, matched); err != nil {
-		fmt.Printf("[deploy] build failed: %v\n", err)
-		if notifier := buildNotifier(cfg, result.AuthorEmail); notifier != nil {
-			go func() {
-				_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
-			}()
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-		return
+	deployResult, err := deploy.Deploy(ctx, matched, cfg, deployer)
+	if err != nil {
+		fmt.Printf("[deploy] deploy failed: %v\n", err)
+	} else {
+		fmt.Printf("[deploy] %s deployed: %s\n", matched.Name, deployResult.Status)
 	}
-
-	// Stop old instance
-	fmt.Printf("[deploy] stopping %s...\n", matched.Name)
-	_ = deployer.Stop(ctx, matched)
-
-	// Start new instance
-	fmt.Printf("[deploy] starting %s...\n", matched.Name)
-	if err := deployer.Start(ctx, matched); err != nil {
-		fmt.Printf("[deploy] start failed: %v\n", err)
-		if notifier := buildNotifier(cfg, result.AuthorEmail); notifier != nil {
-			go func() {
-				_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
-			}()
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-		return
-	}
-
-	fmt.Printf("[deploy] %s deployed successfully\n", matched.Name)
-	if notifier := buildNotifier(cfg, result.AuthorEmail); notifier != nil {
-		go func() {
-			_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "success", "")
-		}()
-	}
-
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }

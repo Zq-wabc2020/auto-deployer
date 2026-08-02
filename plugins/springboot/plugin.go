@@ -27,34 +27,11 @@ func (p *Plugin) Type() string {
 	return "springboot"
 }
 
-// Build executes git fetch followed by the configured build command.
-// Uses Jenkins-style approach: clean clone every time.
+// Build executes the configured build command.
+// Git fetch is handled by the orchestrator before calling this method.
 func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if svc.Build.Command == "" {
 		return fmt.Errorf("build command is empty")
-	}
-
-	keyFile, _, _, err := build.EnsureSSHKey()
-	if err != nil {
-		return fmt.Errorf("failed to ensure SSH key: %w", err)
-	}
-
-	// Fetch fresh code (Jenkins-style: clean state every time)
-	fmt.Printf("[deploy] fetching %s to %s...\n", svc.Repo.URL, svc.Workspace)
-	if err := build.Fetch(svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace); err != nil {
-		if build.IsSSHAuthError(err) {
-			privKeyPath, _, pubKey, err := build.EnsureSSHKey()
-			if err == nil {
-				fmt.Printf("\n[warn] SSH authentication failed. Public key to configure on your Git platform:\n")
-				fmt.Printf("  %s\n\n", pubKey)
-				fmt.Printf("1. Add the above public key to your GitHub/Gitee account:\n")
-				fmt.Printf("   GitHub: Settings → SSH and GPG keys → New SSH key\n")
-				fmt.Printf("   Gitee:  设置 → 安全设置 → SSH公钥\n")
-				fmt.Printf("2. Key file: %s\n", privKeyPath)
-				fmt.Printf("3. Re-run: deployd deploy %s\n\n", svc.Name)
-			}
-		}
-		return fmt.Errorf("git fetch failed: %w", err)
 	}
 
 	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command); err != nil {
