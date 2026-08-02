@@ -33,25 +33,30 @@ func TestBuild_WithScript(t *testing.T) {
 	p := New()
 	workspace := t.TempDir()
 
-	// Initialize a git repo in workspace with an initial commit and origin remote
-	_ = exec.Command("git", "-C", workspace, "init", "-b", "main").Run()
-	_, _ = exec.Command("git", "-C", workspace, "config", "user.email", "test@test.com").CombinedOutput()
-	_, _ = exec.Command("git", "-C", workspace, "config", "user.name", "Test").CombinedOutput()
-	_ = os.WriteFile(filepath.Join(workspace, ".gitkeep"), []byte(""), 0644)
-	_, _ = exec.Command("git", "-C", workspace, "add", ".").CombinedOutput()
-	_, _ = exec.Command("git", "-C", workspace, "commit", "-m", "init").CombinedOutput()
-	// Add itself as origin remote so pull has a target
-	_, _ = exec.Command("git", "-C", workspace, "remote", "add", "origin", workspace).CombinedOutput()
+	// Create a bare repo to act as remote
+	bareDir := filepath.Join(workspace, "..", "bare-repo")
+	_ = os.MkdirAll(bareDir, 0755)
+	_ = exec.Command("git", "-C", bareDir, "init", "--bare").Run()
 
-	script := filepath.Join(workspace, "build.sh")
+	// Create a working repo to push from
+	workDir := filepath.Join(workspace, "..", "work-repo")
+	_ = os.MkdirAll(workDir, 0755)
+	_ = exec.Command("git", "-C", workDir, "init", "-b", "main").Run()
+	_, _ = exec.Command("git", "-C", workDir, "config", "user.email", "test@test.com").CombinedOutput()
+	_, _ = exec.Command("git", "-C", workDir, "config", "user.name", "Test").CombinedOutput()
+
+	script := filepath.Join(workDir, "build.sh")
 	_ = os.WriteFile(script, []byte("#!/bin/sh\necho 'building'\nexit 0\n"), 0755)
-	_, _ = exec.Command("git", "-C", workspace, "add", "build.sh").CombinedOutput()
-	_, _ = exec.Command("git", "-C", workspace, "commit", "-m", "add build script").CombinedOutput()
+	_ = os.WriteFile(filepath.Join(workDir, ".gitkeep"), []byte(""), 0644)
+	_ = exec.Command("git", "-C", workDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", workDir, "commit", "-m", "init").Run()
+	_, _ = exec.Command("git", "-C", workDir, "remote", "add", "origin", bareDir).CombinedOutput()
+	_, _ = exec.Command("git", "-C", workDir, "push", "-u", "origin", "main").CombinedOutput()
 
 	svc := &config.ServiceConfig{
 		Workspace: workspace,
 		Build:     config.BuildConfig{Command: script},
-		Repo:      config.RepoConfig{Branch: "main"},
+		Repo:      config.RepoConfig{URL: bareDir, Branch: "main"},
 	}
 	buildErr := p.Build(context.Background(), svc)
 	if buildErr != nil {

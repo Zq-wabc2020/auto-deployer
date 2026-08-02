@@ -49,7 +49,8 @@ func TestPull_UpdatesWorkingDir(t *testing.T) {
 	_ = runCmd(setupDir, "git", "commit", "-m", "second")
 	_ = runCmd(setupDir, "git", "push", bareDir, "main")
 
-	err := Pull(destDir, "main", "")
+	// Use Fetch (Jenkins-style)
+	err := Fetch(bareDir, "", "main", destDir)
 	if err != nil {
 		t.Fatal(err)
 	}

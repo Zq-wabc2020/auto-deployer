@@ -27,7 +27,8 @@ func (p *Plugin) Type() string {
 	return "springboot"
 }
 
-// Build executes git clone/pull followed by the configured build command.
+// Build executes git fetch followed by the configured build command.
+// Uses Jenkins-style approach: clean clone every time.
 func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if svc.Build.Command == "" {
 		return fmt.Errorf("build command is empty")
@@ -38,32 +39,22 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 		return fmt.Errorf("failed to ensure SSH key: %w", err)
 	}
 
-	// Check if workspace needs to be cloned (doesn't exist or not a git repo)
-	gitDir := filepath.Join(svc.Workspace, ".git")
-	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-		// Clone the repository
-		fmt.Printf("[deploy] cloning %s to %s...\n", svc.Repo.URL, svc.Workspace)
-		if err := build.Clone(svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace); err != nil {
-			return fmt.Errorf("git clone failed: %w", err)
-		}
-	} else {
-		// Pull updates
-		fmt.Printf("[deploy] pulling updates for %s...\n", svc.Workspace)
-		if err := build.Pull(svc.Workspace, svc.Repo.Branch, keyFile); err != nil {
-			if build.IsSSHAuthError(err) {
-				privKeyPath, _, pubKey, err := build.EnsureSSHKey()
-				if err == nil {
-					fmt.Printf("\n[warn] SSH authentication failed. Public key to configure on your Git platform:\n")
-					fmt.Printf("  %s\n\n", pubKey)
-					fmt.Printf("1. Add the above public key to your GitHub/Gitee account:\n")
-					fmt.Printf("   GitHub: Settings → SSH and GPG keys → New SSH key\n")
-					fmt.Printf("   Gitee:  设置 → 安全设置 → SSH公钥\n")
-					fmt.Printf("2. Key file: %s\n", privKeyPath)
-					fmt.Printf("3. Re-run: deployd deploy %s\n\n", svc.Name)
-				}
+	// Fetch fresh code (Jenkins-style: clean state every time)
+	fmt.Printf("[deploy] fetching %s to %s...\n", svc.Repo.URL, svc.Workspace)
+	if err := build.Fetch(svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace); err != nil {
+		if build.IsSSHAuthError(err) {
+			privKeyPath, _, pubKey, err := build.EnsureSSHKey()
+			if err == nil {
+				fmt.Printf("\n[warn] SSH authentication failed. Public key to configure on your Git platform:\n")
+				fmt.Printf("  %s\n\n", pubKey)
+				fmt.Printf("1. Add the above public key to your GitHub/Gitee account:\n")
+				fmt.Printf("   GitHub: Settings → SSH and GPG keys → New SSH key\n")
+				fmt.Printf("   Gitee:  设置 → 安全设置 → SSH公钥\n")
+				fmt.Printf("2. Key file: %s\n", privKeyPath)
+				fmt.Printf("3. Re-run: deployd deploy %s\n\n", svc.Name)
 			}
-			return fmt.Errorf("git pull failed: %w", err)
 		}
+		return fmt.Errorf("git fetch failed: %w", err)
 	}
 
 	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command); err != nil {
@@ -75,16 +66,11 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 		fmt.Printf("[springboot] warning: failed to move jar: %v\n", err)
 	}
 
-	// Clean up target directory (build artifacts)
-	if err := os.RemoveAll(filepath.Join(svc.Workspace, "target")); err != nil {
-		fmt.Printf("[springboot] warning: failed to clean target: %v\n", err)
-	}
-
-	// Clean up non-essential files (keep .git for future pulls)
+	// Clean up everything except jar file (source code removed after build)
 	if err := cleanWorkspace(svc.Workspace); err != nil {
 		fmt.Printf("[springboot] warning: failed to clean workspace: %v\n", err)
 	} else {
-		fmt.Printf("[springboot] cleaned workspace\n")
+		fmt.Printf("[springboot] cleaned workspace (source code removed)\n")
 	}
 
 	fmt.Println("[springboot] build completed")
@@ -178,26 +164,18 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// cleanWorkspace removes all files except jar files, target/ directory, and .git directory.
+// cleanWorkspace removes all files except jar files.
 func cleanWorkspace(workspace string) error {
 	entries, err := os.ReadDir(workspace)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		// Skip jar files (already copied to root)
+		// Skip jar files (build artifacts to keep)
 		if strings.HasSuffix(entry.Name(), ".jar") {
 			continue
 		}
-		// Skip target directory (build artifacts, will be recreated)
-		if entry.Name() == "target" {
-			continue
-		}
-		// Skip .git directory (needed for future pulls)
-		if entry.Name() == ".git" {
-			continue
-		}
-		// Remove everything else
+		// Remove everything else (source code, .git, target, etc.)
 		path := filepath.Join(workspace, entry.Name())
 		if entry.IsDir() {
 			if err := os.RemoveAll(path); err != nil {

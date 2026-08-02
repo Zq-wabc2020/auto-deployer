@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -38,65 +39,68 @@ func Clone(repoURL, keyFile, branch, destDir string) error {
 	return nil
 }
 
-// Pull performs git pull --force origin <branch> in destDir,
-// resetting local changes and cleaning untracked files.
-// If keyFile is provided, GIT_SSH_COMMAND is set for SSH authentication.
-func Pull(destDir, branch, keyFile string) error {
-	// Ensure we're on the correct branch (not detached HEAD)
-	checkoutCmd := exec.Command("git", "checkout", branch)
-	checkoutCmd.Dir = destDir
+// Fetch clones or updates a specific branch using Jenkins-style approach:
+// git init → git remote add → git fetch → git checkout -f
+// This ensures a clean state every time, similar to Jenkins Git plugin.
+func Fetch(repoURL, keyFile, branch, destDir string) error {
+	if err := ensureDir(destDir); err != nil {
+		return err
+	}
+
+	url := repoURL
+	if !strings.HasPrefix(url, "git@") && !strings.HasPrefix(url, "ssh://") {
+		url = HTTPSToSSH(url)
+	}
+
+	// Check if .git exists, if so, remove it for clean state
+	gitDir := filepath.Join(destDir, ".git")
+	if _, err := os.Stat(gitDir); err == nil {
+		if err := os.RemoveAll(gitDir); err != nil {
+			return fmt.Errorf("failed to remove .git: %w", err)
+		}
+	}
+
+	// git init
+	initCmd := exec.Command("git", "init", destDir)
+	initCmd.Stdout = os.Stdout
+	initCmd.Stderr = os.Stderr
+	if err := initCmd.Run(); err != nil {
+		return fmt.Errorf("git init failed: %w", err)
+	}
+
+	// git remote add origin <url>
+	remoteCmd := exec.Command("git", "-C", destDir, "remote", "add", "origin", url)
+	remoteCmd.Stdout = os.Stdout
+	remoteCmd.Stderr = os.Stderr
+	if keyFile != "" {
+		remoteCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
+	}
+	if err := remoteCmd.Run(); err != nil {
+		return fmt.Errorf("git remote add failed: %w", err)
+	}
+
+	// git fetch --force --progress origin <branch>
+	fetchCmd := exec.Command("git", "-C", destDir, "fetch", "--force", "--progress", "origin", branch)
+	fetchCmd.Stdout = os.Stdout
+	fetchCmd.Stderr = os.Stderr
+	if keyFile != "" {
+		fetchCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
+	}
+	if err := fetchCmd.Run(); err != nil {
+		return fmt.Errorf("git fetch failed: %w", err)
+	}
+
+	// git checkout -f <branch>
+	checkoutCmd := exec.Command("git", "-C", destDir, "checkout", "-f", branch)
 	checkoutCmd.Stdout = os.Stdout
 	checkoutCmd.Stderr = os.Stderr
 	if keyFile != "" {
 		checkoutCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
 	}
 	if err := checkoutCmd.Run(); err != nil {
-		// If branch doesn't exist locally, create it
-		checkoutCmd = exec.Command("git", "checkout", "-b", branch, "origin/"+branch)
-		checkoutCmd.Dir = destDir
-		checkoutCmd.Stdout = os.Stdout
-		checkoutCmd.Stderr = os.Stderr
-		if keyFile != "" {
-			checkoutCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
-		}
-		if err := checkoutCmd.Run(); err != nil {
-			return fmt.Errorf("git checkout failed: %w", err)
-		}
+		return fmt.Errorf("git checkout failed: %w", err)
 	}
 
-	forceArgs := []string{"pull", "--force", "origin", branch}
-	cmd := exec.Command("git", forceArgs...)
-	cmd.Dir = destDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if keyFile != "" {
-		cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
-	}
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git pull --force failed: %w", err)
-	}
-	// Reset local changes to match remote
-	resetCmd := exec.Command("git", "reset", "--hard", "origin/"+branch)
-	resetCmd.Dir = destDir
-	resetCmd.Stdout = os.Stdout
-	resetCmd.Stderr = os.Stderr
-	if keyFile != "" {
-		resetCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
-	}
-	if err := resetCmd.Run(); err != nil {
-		return fmt.Errorf("git reset --hard failed: %w", err)
-	}
-	// Clean untracked files (but respect .gitignore)
-	cleanCmd := exec.Command("git", "clean", "-fd")
-	cleanCmd.Dir = destDir
-	cleanCmd.Stdout = os.Stdout
-	cleanCmd.Stderr = os.Stderr
-	if keyFile != "" {
-		cleanCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
-	}
-	if err := cleanCmd.Run(); err != nil {
-		return fmt.Errorf("git clean failed: %w", err)
-	}
 	return nil
 }
 
