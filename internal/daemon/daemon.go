@@ -91,16 +91,12 @@ func Start(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
-	origStdout := os.Stdout
-	origStderr := os.Stderr
 	os.Stdout = logFile
 	os.Stderr = logFile
 
 	// 9. Check if already running
 	if mgr.Status() == "running" {
 		existingPID, _ := mgr.ReadPID()
-		os.Stdout = origStdout
-		os.Stderr = origStderr
 		return fmt.Errorf("deployd is already running (pid: %d)", existingPID)
 	}
 
@@ -130,10 +126,9 @@ func Start(configPath string) error {
 	// 12. Ignore SIGHUP so daemon survives SSH disconnect
 	signal.Ignore(syscall.SIGHUP)
 
-	// Block until termination signal
+	// 13. Block until termination signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	fmt.Printf("[daemon] debug: waiting for signal...\n")
 	sig := <-sigCh
 	fmt.Printf("[daemon] received %s, shutting down...\n", sig)
 
