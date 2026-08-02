@@ -50,7 +50,7 @@ func forkToBackground(configPath string) error {
 	}
 
 	// Open log file for child process output
-	logDir := filepath.Join(homeDir(configPath), ".deployd")
+	logDir := filepath.Join(filepath.Dir(configPath), ".deployd")
 	_ = os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, "daemon-fork.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -71,14 +71,13 @@ func forkToBackground(configPath string) error {
 
 	// Wait briefly to check if child exits immediately
 	time.Sleep(500 * time.Millisecond)
-	if err := cmd.Process.Wait(); err != nil {
+	if waitErr := cmd.Process.Wait(); waitErr != nil {
 		_ = logFile.Close()
-		return fmt.Errorf("daemon failed to start (check %s): %w", logPath, err)
+		return fmt.Errorf("daemon failed to start (check %s): %w", logPath, waitErr)
 	}
 
 	fmt.Printf("daemon started in background (pid: %d)\n", cmd.Process.Pid)
-	fmt.Printf("logs: ~/.deployd/deployd.log\n")
-	fmt.Printf("fork log: %s\n", logPath)
+	fmt.Printf("logs: %s\n", logPath)
 	fmt.Printf("use 'deployd status' or 'deployd stop' to manage\n")
 	return nil
 }
