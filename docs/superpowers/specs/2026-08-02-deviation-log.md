@@ -27,12 +27,13 @@
 
 ---
 
-### 3. 邮件通知未包含 git 提交人（已修复）
+### 3. 邮件通知默认发给 git 提交人（已修复）
 
 - **设计文档要求：** 收件人包括 `notifications.to` 配置的所有地址 + 从 webhook payload 提取的 `authorEmail`
+- **用户补充要求：** 默认给 git 操作人（authorEmail）发送，`notifications.to` 是追加发送
 - **原始实现：** 只在 `notifications.to` 非空时才发送邮件，`authorEmail` 有值但 `to` 为空时不通知
 - **原因：** `hasNotifications` 函数只检查 `len(cfg.Notifications.To) > 0`，未考虑 authorEmail
-- **修复方式：** `buildNotifier` 现在同时检查 SMTP/Resend 配置，并将 `authorEmail` 追加到收件人列表；`hasNotifications` 已移除
+- **修复方式：** `buildNotifier` 始终以 `authorEmail` 为默认收件人，`notifications.To` 追加到其后；只要有 SMTP 或 Resend 配置就创建 notifier，不要求 `notifications.to` 非空
 - **影响范围：** `internal/webhook/server.go`、`internal/daemon/commands.go`
 
 ---
@@ -91,5 +92,5 @@
 
 | 配置项 | 变化 |
 |--------|------|
-| `notifications.to` | 必填（至少有一个邮箱），否则不发送邮件；`authorEmail` 会自动追加 |
+| `notifications.to` | 追加收件人（可选），默认收件人始终是 git 提交人（authorEmail） |
 | `run.command` | 建议写 `java -jar target/app.jar` 或构建后移动到根目录后写 `java -jar app.jar` |
