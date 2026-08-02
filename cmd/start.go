@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
@@ -48,9 +49,19 @@ func forkToBackground(configPath string) error {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
+	// Open log file for child process output
+	logDir := filepath.Join(homeDir(configPath), ".deployd")
+	_ = os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, "daemon-fork.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open fork log: %w", err)
+	}
+	defer logFile.Close()
+
 	cmd := exec.Command(exe, "start", "--no-fork", "-c", configPath)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
@@ -58,8 +69,16 @@ func forkToBackground(configPath string) error {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 
+	// Wait briefly to check if child exits immediately
+	time.Sleep(500 * time.Millisecond)
+	if err := cmd.Process.Wait(); err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("daemon failed to start (check %s): %w", logPath, err)
+	}
+
 	fmt.Printf("daemon started in background (pid: %d)\n", cmd.Process.Pid)
 	fmt.Printf("logs: ~/.deployd/deployd.log\n")
+	fmt.Printf("fork log: %s\n", logPath)
 	fmt.Printf("use 'deployd status' or 'deployd stop' to manage\n")
 	return nil
 }
