@@ -83,8 +83,24 @@
 
 ## 待确认项
 
-1. **jar 清理策略：** 当前在每次构建后移动 jar 到根目录。是否需要在启动服务后删除 `target/` 目录和源码？（设计文档提到"完成后清除拉取的代码"）
-2. **logs follow 实现：** 当前用纯 Go 实现 tail -f，性能不如系统 `tail -f` 命令。是否需要在 Linux 上调用系统 `tail` 命令？
+1. **logs follow 实现：** 当前用纯 Go 实现 tail -f，性能不如系统 `tail -f` 命令。是否需要在 Linux 上调用系统 `tail` 命令？
+
+---
+
+## 2026-08-02 新增修复
+
+### 6. git pull 后 detached HEAD 问题（已修复）
+
+- **问题：** `git reset --hard origin/main` 导致 detached HEAD 状态，Maven 找不到项目
+- **原因：** reset 后 HEAD 指向具体 commit 而非 branch
+- **修复方式：** 先 `git checkout branch` 确保在分支上，再执行 pull/reset/clean
+- **影响范围：** `internal/build/git.go` 的 `Pull` 函数
+
+### 7. 构建后清理 git 仓库（已修复）
+
+- **用户需求：** 不管构建成功还是失败，都清理 git 下载的东西
+- **修复方式：** 在 `Build()` 完成后删除 `.git` 目录
+- **影响范围：** `plugins/springboot/plugin.go`
 
 ---
 
