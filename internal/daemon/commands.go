@@ -201,7 +201,7 @@ func TriggerDeploy(serviceName, configPath string) error {
 	return nil
 }
 
-func homeDir(configPath string) string {
+func homeDir(_ string) string {
 	h, _ := os.UserHomeDir()
 	return h
 }

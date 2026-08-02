@@ -251,3 +251,46 @@ services: []
 		t.Errorf("expected resend from 'deployd <onboarding@example.com>', got '%s'", cfg.Resend.From)
 	}
 }
+
+func TestDefaultConfig_CurrentDir(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("server:\n  port: 9527\n"), 0644)
+	oldWd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
+	path := DefaultConfig()
+	if path == "" {
+		t.Fatal("expected config path in current directory")
+	}
+	if !strings.HasSuffix(path, "config.yaml") {
+		t.Errorf("expected config.yaml, got %s", path)
+	}
+}
+
+func TestDefaultConfig_HomeDirFallback(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, ".deployd"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, ".deployd", "config.yaml"), []byte("server:\n  port: 9527\n"), 0644)
+	oldHome, _ := os.UserHomeDir()
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", oldHome)
+	oldWd, _ := os.Getwd()
+	_ = os.Chdir("/tmp")
+	defer func() { _ = os.Chdir(oldWd) }()
+	path := DefaultConfig()
+	expected := filepath.Join(dir, ".deployd", "config.yaml")
+	if path != expected {
+		t.Errorf("expected %s, got %s", expected, path)
+	}
+}
+
+func TestDefaultConfig_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
+	path := DefaultConfig()
+	if path != "" {
+		t.Errorf("expected empty string when no config found, got %s", path)
+	}
+}
