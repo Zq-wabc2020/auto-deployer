@@ -75,6 +75,13 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 		fmt.Printf("[springboot] warning: failed to move jar: %v\n", err)
 	}
 
+	// Clean up git repository (remove .git directory)
+	if err := os.RemoveAll(filepath.Join(svc.Workspace, ".git")); err != nil {
+		fmt.Printf("[springboot] warning: failed to clean .git: %v\n", err)
+	} else {
+		fmt.Printf("[springboot] cleaned git repository\n")
+	}
+
 	fmt.Println("[springboot] build completed")
 	return nil
 }
