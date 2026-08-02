@@ -24,7 +24,7 @@ func (p *Plugin) Type() string {
 	return "springboot"
 }
 
-// Build executes git pull followed by the configured build command.
+// Build executes git clone/pull followed by the configured build command.
 func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if svc.Build.Command == "" {
 		return fmt.Errorf("build command is empty")
@@ -34,20 +34,32 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if err != nil {
 		return fmt.Errorf("failed to ensure SSH key: %w", err)
 	}
-	if err := build.Pull(svc.Workspace, svc.Repo.Branch, keyFile); err != nil {
-		if build.IsSSHAuthError(err) {
-			privKeyPath, _, pubKey, err := build.EnsureSSHKey()
-			if err == nil {
-				fmt.Printf("\n[warn] SSH authentication failed. Public key to configure on your Git platform:\n")
-				fmt.Printf("  %s\n\n", pubKey)
-				fmt.Printf("1. Add the above public key to your GitHub/Gitee account:\n")
-				fmt.Printf("   GitHub: Settings → SSH and GPG keys → New SSH key\n")
-				fmt.Printf("   Gitee:  设置 → 安全设置 → SSH公钥\n")
-				fmt.Printf("2. Key file: %s\n", privKeyPath)
-				fmt.Printf("3. Re-run: deployd deploy %s\n\n", svc.Name)
-			}
+
+	// Check if workspace exists and is a git repo
+	if _, err := os.Stat(svc.Workspace); os.IsNotExist(err) {
+		// Clone the repository
+		fmt.Printf("[deploy] cloning %s to %s...\n", svc.Repo.URL, svc.Workspace)
+		if err := build.Clone(svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace); err != nil {
+			return fmt.Errorf("git clone failed: %w", err)
 		}
-		return fmt.Errorf("git pull failed: %w", err)
+	} else {
+		// Pull updates
+		fmt.Printf("[deploy] pulling updates for %s...\n", svc.Workspace)
+		if err := build.Pull(svc.Workspace, svc.Repo.Branch, keyFile); err != nil {
+			if build.IsSSHAuthError(err) {
+				privKeyPath, _, pubKey, err := build.EnsureSSHKey()
+				if err == nil {
+					fmt.Printf("\n[warn] SSH authentication failed. Public key to configure on your Git platform:\n")
+					fmt.Printf("  %s\n\n", pubKey)
+					fmt.Printf("1. Add the above public key to your GitHub/Gitee account:\n")
+					fmt.Printf("   GitHub: Settings → SSH and GPG keys → New SSH key\n")
+					fmt.Printf("   Gitee:  设置 → 安全设置 → SSH公钥\n")
+					fmt.Printf("2. Key file: %s\n", privKeyPath)
+					fmt.Printf("3. Re-run: deployd deploy %s\n\n", svc.Name)
+				}
+			}
+			return fmt.Errorf("git pull failed: %w", err)
+		}
 	}
 
 	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command); err != nil {
