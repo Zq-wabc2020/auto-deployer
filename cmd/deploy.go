@@ -57,10 +57,6 @@ var deployCmd = &cobra.Command{
 		}
 
 		_, err = deploy.Deploy(context.Background(), svc, cfg, d)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "deploy failed: %v\n", err)
-			os.Exit(1)
-		}
-		return nil
+		return err
 	},
 }

@@ -110,7 +110,14 @@ func (n *Notifier) sendSMTP(subject, body string) error {
 		return client.Quit()
 	}
 
-	if err := smtp.SendMail(addr, auth, n.username, recipients, []byte(msg)); err != nil {
+	validRecipients := make([]string, 0, len(recipients))
+	for _, r := range recipients {
+		if r != "" {
+			validRecipients = append(validRecipients, r)
+		}
+	}
+
+	if err := smtp.SendMail(addr, auth, n.username, validRecipients, []byte(msg)); err != nil {
 		return fmt.Errorf("send email: %w", err)
 	}
 	return nil
