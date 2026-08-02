@@ -35,8 +35,9 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 		return fmt.Errorf("failed to ensure SSH key: %w", err)
 	}
 
-	// Check if workspace exists and is a git repo
-	if _, err := os.Stat(svc.Workspace); os.IsNotExist(err) {
+	// Check if workspace needs to be cloned (doesn't exist or not a git repo)
+	gitDir := filepath.Join(svc.Workspace, ".git")
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
 		// Clone the repository
 		fmt.Printf("[deploy] cloning %s to %s...\n", svc.Repo.URL, svc.Workspace)
 		if err := build.Clone(svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace); err != nil {
