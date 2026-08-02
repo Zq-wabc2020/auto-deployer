@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploy"
