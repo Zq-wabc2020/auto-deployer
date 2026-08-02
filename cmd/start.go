@@ -71,7 +71,7 @@ func forkToBackground(configPath string) error {
 
 	// Wait briefly to check if child exits immediately
 	time.Sleep(500 * time.Millisecond)
-	if waitErr := cmd.Process.Wait(); waitErr != nil {
+	if _, waitErr := cmd.Process.Wait(); waitErr != nil {
 		_ = logFile.Close()
 		return fmt.Errorf("daemon failed to start (check %s): %w", logPath, waitErr)
 	}
