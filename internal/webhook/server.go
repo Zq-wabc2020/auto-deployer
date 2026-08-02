@@ -255,19 +255,18 @@ func loadConfig() (*config.AppConfig, error) {
 	return config.Load(configPath)
 }
 
-// buildNotifier creates a Notifier from config, sending to configured recipients
-// plus the author email (if any). Returns nil if no notification provider is configured.
+// buildNotifier creates a Notifier from config.
+// Always includes authorEmail as the default recipient.
+// notifications.To are additional recipients appended to the list.
+// Returns nil only if no notification provider (SMTP or Resend) is configured.
 func buildNotifier(cfg *config.AppConfig, authorEmail string) *notify.Notifier {
 	hasSMTP := cfg != nil && cfg.SMTP.Host != ""
 	hasResend := cfg != nil && cfg.Resend.APIKey != ""
 	if !hasSMTP && !hasResend {
 		return nil
 	}
-	recipients := make([]string, 0, len(cfg.Notifications.To)+1)
+	recipients := []string{authorEmail}
 	recipients = append(recipients, cfg.Notifications.To...)
-	if authorEmail != "" {
-		recipients = append(recipients, authorEmail)
-	}
 	return notify.New(
 		cfg.SMTP.Host,
 		cfg.SMTP.Port,
