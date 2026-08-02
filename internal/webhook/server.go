@@ -142,8 +142,9 @@ func ParsePayload(body []byte, source string) (*DispatchResult, error) {
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, err
 		}
+		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
 		return &DispatchResult{
-			Branch:      payload.Ref,
+			Branch:      branch,
 			RepoURL:     payload.Repository.GitHTTPURL,
 			AuthorEmail: extractAuthorEmail(payload.Commits),
 		}, nil
