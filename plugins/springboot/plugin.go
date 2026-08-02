@@ -85,7 +85,12 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 		return fmt.Errorf("run command is empty")
 	}
 
-	return mgr.Start(parts[0], parts[1:]...)
+	// Set workspace as working directory
+	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd.Dir = svc.Workspace
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return mgr.StartWithCmd(cmd)
 }
 
 // Stop terminates the managed process.
