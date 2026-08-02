@@ -15,6 +15,15 @@ var rootCmd = &cobra.Command{
 
 var configFile string
 
+var serviceCmd = &cobra.Command{
+	Use:   "service",
+	Short: "Manage individual services",
+}
+
+func init() {
+	rootCmd.AddCommand(serviceCmd)
+}
+
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

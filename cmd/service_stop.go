@@ -12,13 +12,13 @@ import (
 )
 
 func init() {
-	deployCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
-	rootCmd.AddCommand(deployCmd)
+	serviceStopCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
+	serviceCmd.AddCommand(serviceStopCmd)
 }
 
-var deployCmd = &cobra.Command{
-	Use:   "deploy <service_name>",
-	Short: "Manually trigger full deployment for a service",
+var serviceStopCmd = &cobra.Command{
+	Use:   "stop <service_name>",
+	Short: "Stop a service",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		serviceName := args[0]
@@ -28,7 +28,7 @@ var deployCmd = &cobra.Command{
 			path = config.DefaultConfig()
 		}
 		if path == "" {
-			return fmt.Errorf("config file not found. Run 'deployd config' to create one, or use -c to specify path")
+			return fmt.Errorf("config file not found")
 		}
 
 		cfg, err := config.Load(path)
@@ -53,14 +53,9 @@ var deployCmd = &cobra.Command{
 		case "springboot":
 			d = springboot.New()
 		default:
-			return fmt.Errorf("unknown service type %q (supported: springboot)", svc.Type)
+			return fmt.Errorf("unknown service type %q", svc.Type)
 		}
 
-		_, err = deploy.Deploy(context.Background(), svc, cfg, d)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "deploy failed: %v\n", err)
-			os.Exit(1)
-		}
-		return nil
+		return deploy.ServiceStop(context.Background(), svc, d)
 	},
 }

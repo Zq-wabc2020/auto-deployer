@@ -17,7 +17,14 @@ var configCmd = &cobra.Command{
 	Short: "Interactive configuration wizard",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stdout, "Starting configuration wizard...")
-		fmt.Fprintln(os.Stdout, "Config file: config.yaml")
-		return config.RunWizard(os.Stdout, os.Stdin, "config.yaml")
+
+		// Determine config path: prefer current directory, fallback to ~/.deployd/
+		path := config.DefaultConfig()
+		if path == "" {
+			path = "config.yaml"
+		}
+
+		fmt.Fprintln(os.Stdout, "Config file: "+path)
+		return config.RunWizard(os.Stdout, os.Stdin, path)
 	},
 }
