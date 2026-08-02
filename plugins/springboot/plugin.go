@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
@@ -90,7 +91,17 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	cmd.Dir = svc.Workspace
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return mgr.StartWithCmd(cmd)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start process: %w", err)
+	}
+
+	if err := mgr.WritePID(cmd.Process.Pid); err != nil {
+		return err
+	}
+
+	fmt.Printf("started %s with pid %d\n", parts[0], cmd.Process.Pid)
+	return nil
 }
 
 // Stop terminates the managed process.
