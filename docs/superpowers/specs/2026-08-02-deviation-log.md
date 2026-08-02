@@ -115,6 +115,16 @@
 - **修复方式：** 删除 "running" 状态通知，只在成功或失败时发送一封邮件
 - **影响范围：** `internal/webhook/server.go`
 
+### 10. Git 拉取改为 Jenkins 风格（已修复）
+
+- **问题：** 原来使用 `git pull` 保留 `.git`，可能导致本地修改残留
+- **设计参考：** Jenkins Git 插件的拉取逻辑：`git init` → `git fetch` → `git checkout -f`
+- **修复方式：** 
+  - 每次触发都执行 `git fetch`（强制拉取指定分支）
+  - 构建完成后清理所有源码（只保留 jar）
+  - 不再保留 `.git` 目录
+- **影响范围：** `internal/build/git.go` 新增 `Fetch()`，`plugins/springboot/plugin.go` 改用 `Fetch()`
+
 ---
 
 ## 配置文件变更说明
