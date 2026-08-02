@@ -104,15 +104,6 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	result.ServiceName = matched.Name
 	fmt.Printf("[webhook] matched service: %s\n", result.ServiceName)
 
-	// Send deployment started notification in background
-	notifier := buildNotifier(cfg, result.AuthorEmail)
-	if notifier != nil {
-		go func() {
-			ctx := context.Background()
-			_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "running", "")
-		}()
-	}
-
 	// Dispatch to plugin for build + restart
 	ctx := context.Background()
 	var deployer Deployer
@@ -130,7 +121,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[deploy] building %s...\n", matched.Name)
 	if err := deployer.Build(ctx, matched); err != nil {
 		fmt.Printf("[deploy] build failed: %v\n", err)
-		if notifier != nil {
+		if notifier := buildNotifier(cfg, result.AuthorEmail); notifier != nil {
 			go func() {
 				_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
 			}()
@@ -148,7 +139,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[deploy] starting %s...\n", matched.Name)
 	if err := deployer.Start(ctx, matched); err != nil {
 		fmt.Printf("[deploy] start failed: %v\n", err)
-		if notifier != nil {
+		if notifier := buildNotifier(cfg, result.AuthorEmail); notifier != nil {
 			go func() {
 				_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
 			}()
@@ -159,7 +150,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Printf("[deploy] %s deployed successfully\n", matched.Name)
-	if notifier != nil {
+	if notifier := buildNotifier(cfg, result.AuthorEmail); notifier != nil {
 		go func() {
 			_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "success", "")
 		}()
