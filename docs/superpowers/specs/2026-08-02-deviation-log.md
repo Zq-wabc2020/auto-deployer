@@ -102,6 +102,12 @@
 - **修复方式：** 在 `Build()` 完成后删除 `.git` 目录
 - **影响范围：** `plugins/springboot/plugin.go`
 
+### 8. 保留 .git 目录以便后续快速 pull（已修复）
+
+- **问题：** 删除 `.git` 后，每次触发都执行 `git clone`（慢），容易触发 Gitee 超时重试，导致重复邮件
+- **修复方式：** 保留 `.git` 目录，每次触发使用 `git pull`（快）；在构建前清理 `target/` 目录
+- **影响范围：** `plugins/springboot/plugin.go`
+
 ---
 
 ## 配置文件变更说明
