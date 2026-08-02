@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/notify"
 	"github.com/auto-deployer/auto-deployer/plugins/springboot"
@@ -249,10 +250,13 @@ func extractAuthorEmail(commits []GitHubCommit) string {
 }
 
 // MatchService finds the first service whose repo URL and branch match the dispatch result.
+// It normalizes both URLs to SSH format for comparison.
 func MatchService(services []config.ServiceConfig, result *DispatchResult) *config.ServiceConfig {
+	configURL := build.HTTPSToSSH(result.RepoURL)
 	for i := range services {
 		svc := &services[i]
-		if svc.Repo.URL == result.RepoURL && svc.Repo.Branch == result.Branch {
+		svcURL := build.HTTPSToSSH(svc.Repo.URL)
+		if svcURL == configURL && svc.Repo.Branch == result.Branch {
 			return svc
 		}
 	}
