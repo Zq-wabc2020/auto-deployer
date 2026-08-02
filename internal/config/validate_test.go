@@ -180,8 +180,11 @@ func TestValidate_SMTPMissing(t *testing.T) {
 		SMTP:       SMTPConfig{}, // empty
 	}
 	errs := Validate(cfg)
-	if len(errs) != 4 {
-		t.Fatalf("expected 4 errors, got %d: %v", len(errs), errs)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if errs[0].Error() != "either smtp.host or resend.api_key is required when notifications.to is set" {
+		t.Fatalf("unexpected error: %v", errs[0])
 	}
 }
 
