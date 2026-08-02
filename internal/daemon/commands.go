@@ -70,12 +70,12 @@ func Logs(serviceName, configPath, logFile string) error {
 		return nil
 	}
 
-	logDir := filepath.Join(homeDir(configPath), ".deployd", "logs")
+	logDir := filepath.Join(homeDir(configPath), ".deployd")
 	var lf string
 	if serviceName != "" {
-		lf = filepath.Join(logDir, serviceName+".log")
+		lf = filepath.Join(logDir, "services", serviceName+".log")
 	} else {
-		lf = filepath.Join(logDir, "deployd.log")
+		lf = filepath.Join(logDir, daemonLogName)
 	}
 
 	data, err := os.ReadFile(lf)
