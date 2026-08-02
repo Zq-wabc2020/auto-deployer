@@ -105,17 +105,8 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[webhook] matched service: %s\n", result.ServiceName)
 
 	// Send deployment started notification in background
-	if hasNotifications(cfg) {
-		notifier := notify.New(
-			cfg.SMTP.Host,
-			cfg.SMTP.Port,
-			cfg.SMTP.Username,
-			cfg.SMTP.Token,
-			cfg.SMTP.TLS,
-			cfg.Resend.APIKey,
-			cfg.Resend.From,
-			cfg.Notifications.To,
-		)
+	notifier := buildNotifier(cfg, result.AuthorEmail)
+	if notifier != nil {
 		go func() {
 			ctx := context.Background()
 			_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "running", "")
@@ -139,18 +130,9 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[deploy] building %s...\n", matched.Name)
 	if err := deployer.Build(ctx, matched); err != nil {
 		fmt.Printf("[deploy] build failed: %v\n", err)
-		if hasNotifications(cfg) {
+		if notifier != nil {
 			go func() {
-				_ = notify.New(
-					cfg.SMTP.Host,
-					cfg.SMTP.Port,
-					cfg.SMTP.Username,
-					cfg.SMTP.Token,
-					cfg.SMTP.TLS,
-					cfg.Resend.APIKey,
-					cfg.Resend.From,
-					cfg.Notifications.To,
-				).NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
+				_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
 			}()
 		}
 		w.WriteHeader(http.StatusOK)
@@ -166,18 +148,9 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[deploy] starting %s...\n", matched.Name)
 	if err := deployer.Start(ctx, matched); err != nil {
 		fmt.Printf("[deploy] start failed: %v\n", err)
-		if hasNotifications(cfg) {
+		if notifier != nil {
 			go func() {
-				_ = notify.New(
-					cfg.SMTP.Host,
-					cfg.SMTP.Port,
-					cfg.SMTP.Username,
-					cfg.SMTP.Token,
-					cfg.SMTP.TLS,
-					cfg.Resend.APIKey,
-					cfg.Resend.From,
-					cfg.Notifications.To,
-				).NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
+				_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "failed", err.Error())
 			}()
 		}
 		w.WriteHeader(http.StatusOK)
@@ -186,18 +159,9 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Printf("[deploy] %s deployed successfully\n", matched.Name)
-	if hasNotifications(cfg) {
+	if notifier != nil {
 		go func() {
-			_ = notify.New(
-				cfg.SMTP.Host,
-				cfg.SMTP.Port,
-				cfg.SMTP.Username,
-				cfg.SMTP.Token,
-				cfg.SMTP.TLS,
-				cfg.Resend.APIKey,
-				cfg.Resend.From,
-				cfg.Notifications.To,
-			).NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "success", "")
+			_ = notifier.NotifyDeployResult(ctx, matched.Name, result.Branch, result.AuthorEmail, "success", "")
 		}()
 	}
 
@@ -291,6 +255,27 @@ func loadConfig() (*config.AppConfig, error) {
 	return config.Load(configPath)
 }
 
-func hasNotifications(cfg *config.AppConfig) bool {
-	return cfg != nil && len(cfg.Notifications.To) > 0
+// buildNotifier creates a Notifier from config, sending to configured recipients
+// plus the author email (if any). Returns nil if no notification provider is configured.
+func buildNotifier(cfg *config.AppConfig, authorEmail string) *notify.Notifier {
+	hasSMTP := cfg != nil && cfg.SMTP.Host != ""
+	hasResend := cfg != nil && cfg.Resend.APIKey != ""
+	if !hasSMTP && !hasResend {
+		return nil
+	}
+	recipients := make([]string, 0, len(cfg.Notifications.To)+1)
+	recipients = append(recipients, cfg.Notifications.To...)
+	if authorEmail != "" {
+		recipients = append(recipients, authorEmail)
+	}
+	return notify.New(
+		cfg.SMTP.Host,
+		cfg.SMTP.Port,
+		cfg.SMTP.Username,
+		cfg.SMTP.Token,
+		cfg.SMTP.TLS,
+		cfg.Resend.APIKey,
+		cfg.Resend.From,
+		recipients,
+	)
 }

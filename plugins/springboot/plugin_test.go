@@ -45,6 +45,8 @@ func TestBuild_WithScript(t *testing.T) {
 
 	script := filepath.Join(workspace, "build.sh")
 	_ = os.WriteFile(script, []byte("#!/bin/sh\necho 'building'\nexit 0\n"), 0755)
+	_, _ = exec.Command("git", "-C", workspace, "add", "build.sh").CombinedOutput()
+	_, _ = exec.Command("git", "-C", workspace, "commit", "-m", "add build script").CombinedOutput()
 
 	svc := &config.ServiceConfig{
 		Workspace: workspace,

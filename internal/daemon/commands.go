@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -56,38 +58,99 @@ func Status(configPath string) error {
 }
 
 // Logs prints the contents of a log file.
-func Logs(serviceName, configPath, logFile string) error {
+// If tail > 0, shows only the last N lines.
+// If follow is true, tails the file in real-time (like tail -f).
+func Logs(serviceName, configPath, logFile string, tail int, follow bool) error {
+	var lf string
 	if logFile != "" {
-		data, err := os.ReadFile(logFile)
-		if err != nil {
-			if os.IsNotExist(err) {
-				fmt.Println("no logs found")
-				return nil
-			}
-			return err
+		lf = logFile
+	} else {
+		logDir := filepath.Join(homeDir(configPath), ".deployd")
+		if serviceName != "" {
+			lf = filepath.Join(logDir, "services", serviceName+".log")
+		} else {
+			lf = filepath.Join(logDir, daemonLogName)
 		}
-		fmt.Print(string(data))
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(lf); os.IsNotExist(err) {
+		fmt.Println("no logs found")
 		return nil
 	}
 
-	logDir := filepath.Join(homeDir(configPath), ".deployd")
-	var lf string
-	if serviceName != "" {
-		lf = filepath.Join(logDir, "services", serviceName+".log")
-	} else {
-		lf = filepath.Join(logDir, daemonLogName)
+	if follow {
+		return tailFollow(lf, tail)
 	}
 
 	data, err := os.ReadFile(lf)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("no logs found")
-			return nil
-		}
 		return err
 	}
-	fmt.Print(string(data))
+
+	if tail > 0 {
+		lines := bytes.Split(data, []byte("\n"))
+		if len(lines) > tail {
+			lines = lines[len(lines)-tail:]
+		}
+		fmt.Print(string(bytes.Join(lines, []byte("\n"))))
+	} else {
+		fmt.Print(string(data))
+	}
 	return nil
+}
+
+// tailFollow tails a log file in real-time, optionally starting from line N.
+func tailFollow(path string, tail int) error {
+	// First show last N lines if requested
+	if tail > 0 {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		lines := bytes.Split(data, []byte("\n"))
+		if len(lines) > tail {
+			lines = lines[len(lines)-tail:]
+		}
+		fmt.Print(string(bytes.Join(lines, []byte("\n"))))
+	}
+
+	// Open file and seek to end
+	f, err := os.OpenFile(path, os.O_RDONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Seek to end
+	stat, _ := f.Stat()
+	if _, err := f.Seek(stat.Size(), io.SeekStart); err != nil {
+		return err
+	}
+
+	buf := make([]byte, 4096)
+	var pending []byte
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			pending = append(pending, buf[:n]...)
+			lines := bytes.Split(pending, []byte("\n"))
+			// Keep last incomplete line in pending
+			pending = lines[len(lines)-1]
+			for _, line := range lines[:len(lines)-1] {
+				if len(line) > 0 {
+					fmt.Println(string(line))
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+				continue
+			}
+			return err
+		}
+	}
 }
 
 // TriggerDeploy manually triggers deployment for a service.
@@ -116,7 +179,7 @@ func TriggerDeploy(serviceName, configPath string) error {
 	fmt.Printf("[deploy] triggering deployment for %s...\n", svc.Name)
 
 	// Build notifier and send "running" notification
-	notifier := buildNotifier(cfg)
+	notifier := buildNotifier(cfg, "")
 	if notifier != nil {
 		go func() {
 			_ = notifier.NotifyDeployResult(context.Background(), svc.Name, svc.Repo.Branch, "", "running", "")
@@ -144,9 +207,16 @@ func homeDir(configPath string) string {
 }
 
 // buildNotifier creates a Notifier from config, or returns nil if not configured.
-func buildNotifier(cfg *config.AppConfig) *notify.Notifier {
-	if cfg == nil || len(cfg.Notifications.To) == 0 {
+func buildNotifier(cfg *config.AppConfig, authorEmail string) *notify.Notifier {
+	hasSMTP := cfg != nil && cfg.SMTP.Host != ""
+	hasResend := cfg != nil && cfg.Resend.APIKey != ""
+	if !hasSMTP && !hasResend {
 		return nil
+	}
+	recipients := make([]string, 0, len(cfg.Notifications.To)+1)
+	recipients = append(recipients, cfg.Notifications.To...)
+	if authorEmail != "" {
+		recipients = append(recipients, authorEmail)
 	}
 	return notify.New(
 		cfg.SMTP.Host,
@@ -156,6 +226,6 @@ func buildNotifier(cfg *config.AppConfig) *notify.Notifier {
 		cfg.SMTP.TLS,
 		cfg.Resend.APIKey,
 		cfg.Resend.From,
-		cfg.Notifications.To,
+		recipients,
 	)
 }

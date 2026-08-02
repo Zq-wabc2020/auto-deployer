@@ -3,9 +3,11 @@ package springboot
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -68,6 +70,11 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 		return err
 	}
 
+	// Move built jar to workspace root
+	if err := moveJarToRoot(svc.Workspace); err != nil {
+		fmt.Printf("[springboot] warning: failed to move jar: %v\n", err)
+	}
+
 	fmt.Println("[springboot] build completed")
 	return nil
 }
@@ -121,4 +128,40 @@ func (p *Plugin) Status(ctx context.Context, svc *config.ServiceConfig) (string,
 func daemonDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".deployd", "run")
+}
+
+// moveJarToRoot finds the built jar in workspace/target/ and copies it to workspace root.
+func moveJarToRoot(workspace string) error {
+	targetDir := filepath.Join(workspace, "target")
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".jar") && !strings.HasSuffix(entry.Name(), "original.jar") {
+			src := filepath.Join(targetDir, entry.Name())
+			dst := filepath.Join(workspace, entry.Name())
+			if err := copyFile(src, dst); err != nil {
+				return fmt.Errorf("failed to copy jar %s: %w", entry.Name(), err)
+			}
+			fmt.Printf("[springboot] copied %s to %s\n", entry.Name(), workspace)
+			return nil
+		}
+	}
+	return fmt.Errorf("no jar found in %s/target", workspace)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }

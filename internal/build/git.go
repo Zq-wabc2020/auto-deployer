@@ -38,11 +38,12 @@ func Clone(repoURL, keyFile, branch, destDir string) error {
 	return nil
 }
 
-// Pull performs git pull origin <branch> in destDir.
+// Pull performs git pull --force origin <branch> in destDir,
+// resetting local changes and cleaning untracked files.
 // If keyFile is provided, GIT_SSH_COMMAND is set for SSH authentication.
 func Pull(destDir, branch, keyFile string) error {
-	args := []string{"pull", "origin", branch}
-	cmd := exec.Command("git", args...)
+	forceArgs := []string{"pull", "--force", "origin", branch}
+	cmd := exec.Command("git", forceArgs...)
 	cmd.Dir = destDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -50,8 +51,23 @@ func Pull(destDir, branch, keyFile string) error {
 		cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
 	}
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git pull failed: %w", err)
+		return fmt.Errorf("git pull --force failed: %w", err)
 	}
+	// Reset local changes to match remote
+	resetCmd := exec.Command("git", "reset", "--hard", "origin/"+branch)
+	resetCmd.Dir = destDir
+	resetCmd.Stdout = os.Stdout
+	resetCmd.Stderr = os.Stderr
+	if keyFile != "" {
+		resetCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
+	}
+	_ = resetCmd.Run()
+	// Clean untracked files (but respect .gitignore)
+	cleanCmd := exec.Command("git", "clean", "-fd")
+	cleanCmd.Dir = destDir
+	cleanCmd.Stdout = os.Stdout
+	cleanCmd.Stderr = os.Stderr
+	_ = cleanCmd.Run()
 	return nil
 }
 
