@@ -118,11 +118,19 @@ func (n *Notifier) sendSMTP(subject, body string) error {
 
 // sendResend sends via Resend HTTP API.
 func (n *Notifier) sendResend(subject, body string) error {
-	recipients := n.to
+	validRecipients := make([]string, 0, len(n.to))
+	for _, r := range n.to {
+		if r != "" {
+			validRecipients = append(validRecipients, r)
+		}
+	}
+	if len(validRecipients) == 0 {
+		return nil
+	}
 
 	reqBody := map[string]interface{}{
 		"from":    n.resendFrom,
-		"to":      recipients,
+		"to":      validRecipients,
 		"subject": subject,
 		"html":    body,
 	}

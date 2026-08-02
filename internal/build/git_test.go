@@ -61,6 +61,41 @@ func TestPull_UpdatesWorkingDir(t *testing.T) {
 	}
 }
 
+func TestGetLatestAuthorEmail(t *testing.T) {
+	dir := t.TempDir()
+	initCmd := exec.Command("git", "init", dir)
+	initCmd.Run()
+	authorCmd := exec.Command("git", "-C", dir, "config", "user.email", "test@example.com")
+	authorCmd.Run()
+	nameCmd := exec.Command("git", "-C", dir, "config", "user.name", "Test User")
+	nameCmd.Run()
+	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("hello"), 0644)
+	addCmd := exec.Command("git", "-C", dir, "add", ".")
+	addCmd.Run()
+	commitCmd := exec.Command("git", "-C", dir, "commit", "-m", "initial")
+	commitCmd.Run()
+
+	email := GetLatestAuthorEmail(dir, "master")
+	if email != "test@example.com" {
+		t.Errorf("expected test@example.com, got %s", email)
+	}
+}
+
+func TestGetLatestAuthorEmail_NonExistentDir(t *testing.T) {
+	email := GetLatestAuthorEmail("/nonexistent/path", "main")
+	if email != "" {
+		t.Errorf("expected empty string for nonexistent dir, got %s", email)
+	}
+}
+
+func TestGetLatestAuthorEmail_NotAGitRepo(t *testing.T) {
+	dir := t.TempDir()
+	email := GetLatestAuthorEmail(dir, "main")
+	if email != "" {
+		t.Errorf("expected empty string for non-git dir, got %s", email)
+	}
+}
+
 func runCmd(dir, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir

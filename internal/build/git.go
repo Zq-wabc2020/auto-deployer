@@ -123,3 +123,14 @@ func Fetch(repoURL, keyFile, branch, destDir string) error {
 func ensureDir(dir string) error {
 	return exec.Command("mkdir", "-p", dir).Run()
 }
+
+// GetLatestAuthorEmail executes git log -1 --format=%ae in the workspace directory.
+// Returns empty string if the directory doesn't exist, isn't a git repo, or the command fails.
+func GetLatestAuthorEmail(workspace, branch string) string {
+	cmd := exec.Command("git", "-C", workspace, "log", "-1", "--format=%ae")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
