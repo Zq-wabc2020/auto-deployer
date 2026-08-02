@@ -35,19 +35,26 @@ func Validate(cfg *AppConfig) []error {
 		}
 	}
 
-	// Validate SMTP config when notifications.to is non-empty
+	// Validate notification config: need either SMTP or Resend
 	if len(cfg.Notifications.To) > 0 {
-		if cfg.SMTP.Host == "" {
-			errs = append(errs, fmt.Errorf("smtp.host is required when notifications.to is set"))
+		hasSMTP := cfg.SMTP.Host != ""
+		hasResend := cfg.Resend.APIKey != ""
+		if !hasSMTP && !hasResend {
+			errs = append(errs, fmt.Errorf("either smtp.host or resend.api_key is required when notifications.to is set"))
 		}
-		if cfg.SMTP.Port == 0 {
-			errs = append(errs, fmt.Errorf("smtp.port is required when notifications.to is set"))
+		if hasSMTP {
+			if cfg.SMTP.Port == 0 {
+				errs = append(errs, fmt.Errorf("smtp.port is required when smtp.host is set"))
+			}
+			if cfg.SMTP.Username == "" {
+				errs = append(errs, fmt.Errorf("smtp.username is required when smtp.host is set"))
+			}
+			if cfg.SMTP.Token == "" {
+				errs = append(errs, fmt.Errorf("smtp.token is required when smtp.host is set"))
+			}
 		}
-		if cfg.SMTP.Username == "" {
-			errs = append(errs, fmt.Errorf("smtp.username is required when notifications.to is set"))
-		}
-		if cfg.SMTP.Token == "" {
-			errs = append(errs, fmt.Errorf("smtp.token is required when notifications.to is set"))
+		if hasResend && cfg.Resend.From == "" {
+			errs = append(errs, fmt.Errorf("resend.from is required when resend.api_key is set"))
 		}
 	}
 
