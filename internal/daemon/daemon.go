@@ -132,10 +132,12 @@ func Start(configPath string) error {
 
 	// 12. Ignore SIGHUP so daemon survives SSH disconnect
 	signal.Ignore(syscall.SIGHUP)
+	fmt.Printf("[daemon] debug: SIGHUP ignored, about to block\n")
 
 	// Block until termination signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	fmt.Printf("[daemon] debug: waiting for signal...\n")
 	sig := <-sigCh
 	fmt.Printf("[daemon] received %s, shutting down...\n", sig)
 
