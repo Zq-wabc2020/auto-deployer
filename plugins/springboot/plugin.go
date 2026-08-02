@@ -75,11 +75,11 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 		fmt.Printf("[springboot] warning: failed to move jar: %v\n", err)
 	}
 
-	// Clean up git repository (remove .git directory)
-	if err := os.RemoveAll(filepath.Join(svc.Workspace, ".git")); err != nil {
-		fmt.Printf("[springboot] warning: failed to clean .git: %v\n", err)
+	// Clean up everything except the jar file and target directory
+	if err := cleanWorkspace(svc.Workspace); err != nil {
+		fmt.Printf("[springboot] warning: failed to clean workspace: %v\n", err)
 	} else {
-		fmt.Printf("[springboot] cleaned git repository\n")
+		fmt.Printf("[springboot] cleaned workspace (kept jar and target/)\n")
 	}
 
 	fmt.Println("[springboot] build completed")
@@ -171,4 +171,34 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// cleanWorkspace removes all files except jar files and target/ directory.
+func cleanWorkspace(workspace string) error {
+	entries, err := os.ReadDir(workspace)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		// Skip jar files (already copied to root)
+		if strings.HasSuffix(entry.Name(), ".jar") {
+			continue
+		}
+		// Skip target directory (contains build artifacts)
+		if entry.Name() == "target" {
+			continue
+		}
+		// Remove everything else
+		path := filepath.Join(workspace, entry.Name())
+		if entry.IsDir() {
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+		} else {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
