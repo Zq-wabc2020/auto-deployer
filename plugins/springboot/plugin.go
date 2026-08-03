@@ -74,6 +74,14 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// Auto-detect Java version from .java-version file
+	if javaVersion := detectJavaVersion(svc.Workspace); javaVersion != "" {
+		if javaHome := findJavaHome(javaVersion); javaHome != "" {
+			cmd.Env = append(os.Environ(), "JAVA_HOME="+javaHome)
+			cmd.Env = append(cmd.Env, "PATH="+javaHome+string(os.PathListSeparator)+os.Getenv("PATH"))
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
@@ -103,6 +111,30 @@ func (p *Plugin) Status(ctx context.Context, svc *config.ServiceConfig) (string,
 func daemonDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".deployd", "run")
+}
+
+// detectJavaVersion reads .java-version file from workspace.
+func detectJavaVersion(workspace string) string {
+	versionFile := filepath.Join(workspace, ".java-version")
+	data, err := os.ReadFile(versionFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// findJavaHome finds the JDK home for a given version.
+// Tries jenv first, then system Java locations.
+func findJavaHome(version string) string {
+	// Try jenv
+	if jenvPath, err := exec.Command("jenv", "prefix", version).Output(); err == nil {
+		return strings.TrimSpace(string(jenvPath))
+	}
+	// Try system java_home
+	if out, err := exec.Command("/usr/libexec/java_home", "-v", version).Output(); err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
 }
 
 // moveJarToRoot finds the built jar in workspace/target/ and copies it to workspace root.

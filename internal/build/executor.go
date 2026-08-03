@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // ExecuteBuild runs the given shell command in the specified workspace directory.
+// It automatically sets JAVA_HOME if a .java-version file exists in the workspace.
 func ExecuteBuild(workspace, command string) error {
 	if command == "" {
 		return fmt.Errorf("build command is empty")
@@ -22,12 +25,44 @@ func ExecuteBuild(workspace, command string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// Auto-detect Java version from .java-version file
+	if javaVersion := detectJavaVersion(workspace); javaVersion != "" {
+		if javaHome := findJavaHome(javaVersion); javaHome != "" {
+			cmd.Env = append(os.Environ(), "JAVA_HOME="+javaHome)
+			cmd.Env = append(cmd.Env, "PATH="+javaHome+string(os.PathListSeparator)+os.Getenv("PATH"))
+		}
+	}
+
 	fmt.Printf("[build] executing: %s\n", command)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
 	fmt.Println("[build] build completed successfully")
 	return nil
+}
+
+// detectJavaVersion reads .java-version file from workspace.
+func detectJavaVersion(workspace string) string {
+	versionFile := filepath.Join(workspace, ".java-version")
+	data, err := os.ReadFile(versionFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// findJavaHome finds the JDK home for a given version.
+// Tries jenv first, then system Java locations.
+func findJavaHome(version string) string {
+	// Try jenv
+	if jenvPath, err := exec.Command("jenv", "prefix", version).Output(); err == nil {
+		return strings.TrimSpace(string(jenvPath))
+	}
+	// Try system java_home
+	if out, err := exec.Command("/usr/libexec/java_home", "-v", version).Output(); err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
 }
 
 // SplitCommand splits a shell command string into arguments for exec.Command.
