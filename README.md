@@ -7,8 +7,8 @@
 - **后台守护进程** — 在系统后台运行，不受终端关闭影响
 - **Webhook 服务器** — 监听 GitHub / Gitee 推送事件，按仓库 URL 匹配对应服务
 - **插件化部署器** — 可扩展的 Deployer 接口（Spring Boot 等）
-- **邮件通知** — 通过 SMTP 在部署成功/失败时发送 HTML 邮件
-- **CLI 管理** — start、stop、status、logs、deploy 等命令
+- **邮件通知** — 通过 SMTP 或 Resend API 在部署成功/失败时发送 HTML 邮件
+- **CLI 管理** — 完整的守护进程和服务生命周期管理命令
 - **交互式配置向导** — `deployd config` 引导完成配置
 - **发布自动化** — GitHub Actions 自动构建 macOS / Linux 二进制
 
@@ -61,10 +61,10 @@ deployd config
 # 2. 启动守护进程
 deployd start
 
-# 3. 查看状态
+# 3. 查看状态（守护进程 + 所有服务）
 deployd status
 
-# 4. 手动触发部署
+# 4. 手动触发完整部署（构建 + 重启 + 通知）
 deployd deploy <服务名>
 
 # 5. 查看日志
@@ -77,18 +77,33 @@ deployd stop
 
 ### 命令说明
 
+#### 守护进程命令
+
 | 命令 | 描述 |
 |------|------|
-| `deployd start [-c 路径]` | 启动守护进程（默认配置文件：`~/config.yaml`） |
+| `deployd start [-c 路径]` | 启动守护进程 |
 | `deployd stop` | 停止守护进程 |
+| `deployd restart [-c 路径]` | 重启守护进程 |
 | `deployd status` | 显示守护进程及所有服务状态 |
-| `deployd logs [-f 路径] [服务名]` | 查看守护进程或服务日志 |
-| `deployd deploy <名称>` | 手动触发指定服务的部署 |
+| `deployd logs [服务名] [-f]` | 查看日志，加 `-f` 实时跟踪 |
+| `deployd deploy <名称> [-c 路径]` | 手动触发指定服务的完整部署流程 |
 | `deployd config` | 交互式配置向导 |
 
-### 配置文件
+#### 服务生命周期命令
 
-复制示例文件后进行编辑：
+| 命令 | 描述 |
+|------|------|
+| `deployd service start <名称> [-c 路径]` | 启动服务（不重新构建） |
+| `deployd service stop <名称> [-c 路径]` | 停止服务 |
+| `deployd service restart <名称> [-c 路径]` | 重启服务（不重新构建） |
+
+> 服务管理命令仅执行进程生命周期操作，不触发构建。执行完整构建 + 部署流程请使用 `deployd deploy`。
+
+#### 配置文件优先级
+
+`-c` 标志 > 当前目录 `config.yaml` > `~/.deployd/config.yaml`
+
+### 配置文件
 
 ```bash
 cp config.yaml.example config.yaml
@@ -122,13 +137,9 @@ http://<服务器IP>:<端口>/webhook
 
 ## 配置项说明
 
-复制示例文件后进行编辑：
-
 ```bash
 cp config.yaml.example config.yaml
 ```
-
-### 配置项说明
 
 | 配置路径 | 说明 | 示例 |
 |----------|------|------|
@@ -198,14 +209,13 @@ deployd 使用 SSH 密钥认证访问 Git 仓库。启动时会自动检测 `~/.
    ```
    [warn] SSH authentication failed. Public key to configure on your Git platform:
      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... deployd@auto-generated
-   
+
    1. Add the above public key to your GitHub/Gitee account:
       GitHub: Settings → SSH and GPG keys → New SSH key
       Gitee:  设置 → 安全设置 → SSH公钥
    2. Key file: /home/user/.ssh/id_ed25519
    3. Re-run: deployd deploy <服务名>
    ```
-
 
 ### 邮件通知
 
@@ -224,7 +234,7 @@ smtp:
   tls: true
 ```
 
-SMTP 端口 `465` 使用 SSL 连接，端口 `587` 使用 STARTTLS。
+SMPT 端口 `465` 使用 SSL 连接，端口 `587` 使用 STARTTLS。
 
 **方式二：Resend API（推荐，无需配置 SMTP）**
 
@@ -236,8 +246,8 @@ resend:
 
 > 两种方式二选一，优先使用 Resend。
 
-邮件内容：
-- **收件人**：配置的 `to` 列表 + Webhook Payload 中的 Git 提交者邮箱
+邮件通知规则：
+- **收件人**：配置的 `notifications.to` 列表 + Webhook Payload 或 Git 日志中的提交者邮箱
 - **成功主题**：`[deployd] ✅ 部署成功: <服务名>`
 - **失败主题**：`[deployd] ❌ 部署失败: <服务名>`
 - 失败邮件包含错误信息和失败阶段，方便排查问题
@@ -278,35 +288,57 @@ services:
   - name: "my-springboot-app"
     type: "springboot"
     repo:
+      # Git 仓库地址（HTTPS 格式，deployd 会自动转为 SSH）
       url: "https://github.com/user/repo.git"
+      # SSH 私钥路径（可选，留空则使用 ~/.ssh/id_ed25519）
+      # 首次启动 deployd 会自动在 ~/.ssh/ 生成密钥并提示配置公钥
       branch: "main"
-    workspace: "/opt/deployd/apps/my-springboot-app"  # 代码克隆和工作目录
+    # 代码克隆和工作目录
+    workspace: "/opt/deployd/apps/my-springboot-app"
+    # 构建命令
     build:
-      command: "mvn package -DskipTests"   # 构建命令
+      command: "mvn package -DskipTests"
+    # 启动命令
     run:
-      command: "/opt/deployd/apps/my-springboot-app/start.sh"  # 启动命令
+      command: "/opt/deployd/apps/my-springboot-app/start.sh"
+```
+
+## 部署流程
+
+### Webhook 自动部署
+
+```
+GitHub/Gitee Push → Webhook 服务器 → 匹配服务 → 拉取代码 → 调用插件构建 → 重启进程 → 发送通知
+```
+
+### 手动部署（`deployd deploy`）
+
+```
+指定服务名 → 拉取最新代码 → 调用插件构建 → 停止旧进程 → 启动新进程 → 发送通知
 ```
 
 ## 架构
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  GitHub/Gitee│────▶│  Webhook     │────▶│  Plugin      │
-│  推送事件     │     │  服务器       │     │  部署器       │
-└──────────────┘     └──────────────┘     └──────────────┘
-                                         ┌──────────────┐
-                                         │  进程管理      │
-                                         └──────────────┘
-                                         ┌──────────────┐
-                                         │  SMTP        │
-                                         │  邮件通知      │
-                                         └──────────────┘
+│  GitHub/Gitee│────▶│  Webhook     │────▶│  Orchestrator│
+│  推送事件     │     │  服务器       │     │  编排层       │
+└──────────────┘     └──────────────┘     └──────┬───────┘
+                                                 │
+                         ┌───────────────────────┼───────────────────────┐
+                         ▼                       ▼                       ▼
+                    ┌──────────┐          ┌──────────┐          ┌──────────┐
+                    │ Plugin   │          │ 进程管理  │          │ 邮件通知  │
+                    │ 部署器    │          │ PID 文件  │          │ SMTP/    │
+                    │ 插件化   │          │ 管理      │          │ Resend   │
+                    └──────────┘          └──────────┘          └──────────┘
 ```
 
 - **Webhook 服务器** — 解析推送事件，按仓库 URL 匹配已配置的服务
-- **部署器插件** — 按服务类型执行构建和重启逻辑
+- **部署编排层** — 统一处理代码拉取、构建、重启、通知等跨类型逻辑
+- **部署器插件** — 按服务类型执行构建和重启逻辑，支持扩展新类型
 - **进程管理器** — 跟踪运行中的进程，管理服务生命周期
-- **邮件通知器** — 通过 SMTP 异步发送部署结果邮件
+- **邮件通知器** — 通过 SMTP 或 Resend API 异步发送部署结果邮件
 
 ## 开发
 

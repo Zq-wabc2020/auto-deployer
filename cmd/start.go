@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
 )
@@ -24,8 +25,10 @@ var startCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := configFile
 		if path == "" {
-			home, _ := os.UserHomeDir()
-			path = filepath.Join(home, "config.yaml")
+			path = config.DefaultConfig()
+		}
+		if path == "" {
+			return fmt.Errorf("config file not found. Run 'deployd config' to create one, or use -c to specify path")
 		}
 
 		noFork, _ := cmd.Flags().GetBool("no-fork")
