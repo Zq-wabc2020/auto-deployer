@@ -77,8 +77,18 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	// Auto-detect Java version from .java-version file
 	if javaVersion := detectJavaVersion(svc.Workspace); javaVersion != "" {
 		if javaHome := findJavaHome(javaVersion); javaHome != "" {
-			cmd.Env = append(os.Environ(), "JAVA_HOME="+javaHome)
-			cmd.Env = append(cmd.Env, "PATH="+javaHome+string(os.PathListSeparator)+os.Getenv("PATH"))
+			// Replace java command with full path to Java 21
+			javaBin := filepath.Join(javaHome, "bin", "java")
+			parts[0] = javaBin
+			cmd = exec.Command(javaBin, parts[1:]...)
+			cmd.Dir = svc.Workspace
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			// Inherit current environment and add JAVA_HOME and PATH
+			cmd.Env = append(os.Environ(),
+				"JAVA_HOME="+javaHome,
+				"PATH="+javaHome+string(os.PathListSeparator)+os.Getenv("PATH"),
+			)
 		}
 	}
 
@@ -182,6 +192,10 @@ func cleanWorkspace(workspace string) error {
 	for _, entry := range entries {
 		// Skip jar files (build artifacts to keep)
 		if strings.HasSuffix(entry.Name(), ".jar") {
+			continue
+		}
+		// Skip .java-version file (needed for Java version detection)
+		if entry.Name() == ".java-version" {
 			continue
 		}
 		// Remove everything else (source code, .git, target, etc.)
