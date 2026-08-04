@@ -101,9 +101,14 @@ func GetServiceStatus(ctx context.Context, svc *config.ServiceConfig, deployer D
 
 func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, authorEmail, status, errMsg string) {
 	if notifier := buildNotifier(cfg, authorEmail); notifier != nil {
-		go func() {
-			_ = notifier.NotifyDeployResult(ctx, svc.Name, svc.Repo.Branch, authorEmail, status, errMsg)
-		}()
+		fmt.Printf("[deploy] sending notification to: %s\n", authorEmail)
+		if err := notifier.NotifyDeployResult(ctx, svc.Name, svc.Repo.Branch, authorEmail, status, errMsg); err != nil {
+			fmt.Printf("[deploy] warning: failed to send notification: %v\n", err)
+		} else {
+			fmt.Printf("[deploy] notification sent successfully\n")
+		}
+	} else {
+		fmt.Printf("[deploy] no notifier configured (SMTP/Resend not set)\n")
 	}
 }
 
