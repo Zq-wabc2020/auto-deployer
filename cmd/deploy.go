@@ -84,7 +84,7 @@ func forkDeploy(configPath, serviceName string) error {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	logDir := filepath.Join(filepath.Dir(configPath), ".deployd", "deploy")
+	logDir := filepath.Join(filepath.Dir(configPath), ".deployd", "services")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
