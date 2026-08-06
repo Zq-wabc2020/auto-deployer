@@ -10,6 +10,7 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/logger"
 	"github.com/auto-deployer/auto-deployer/internal/process"
 	"github.com/auto-deployer/auto-deployer/internal/webhook"
 	"github.com/auto-deployer/auto-deployer/plugins/springboot"
@@ -93,6 +94,9 @@ func Start(configPath string) error {
 	}
 	os.Stdout = logFile
 	os.Stderr = logFile
+
+	// Initialize service logger manager
+	logger.Init(".deployd/services")
 
 	// 9. Check if already running
 	if mgr.Status() == "running" {
