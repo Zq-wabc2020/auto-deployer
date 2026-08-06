@@ -106,9 +106,6 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	result.ServiceName = matched.Name
 	fmt.Printf("[webhook] matched service: %s\n", result.ServiceName)
 
-	// Initialize service logger for webhook-triggered deploy
-	log := logger.GetServiceLogger(matched.Name)
-
 	// Dispatch to orchestrator for build + restart
 	ctx := context.Background()
 	var deployer deploy.Deployer
@@ -124,9 +121,9 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 
 	deployResult, err := deploy.Deploy(ctx, matched, cfg, deployer)
 	if err != nil {
-		log.Printf("deploy failed: %v", err)
+		fmt.Printf("[deploy] deploy failed: %v\n", err)
 	} else {
-		log.Printf("%s deployed: %s", matched.Name, deployResult.Status)
+		fmt.Printf("[deploy] %s deployed: %s\n", matched.Name, deployResult.Status)
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
