@@ -28,17 +28,17 @@ func (l *Logger) Fprintln(a ...interface{}) {
 
 // Manager provides service-specific loggers.
 type Manager struct {
-	mu       sync.Mutex
-	loggers  map[string]*Logger
-	logDir   string
+	mu      sync.Mutex
+	loggers map[string]*Logger
+	logDir  string
 }
 
 var defaultManager *Manager
-var once sync.Once
+var initOnce sync.Once
 
 // Init initializes the global logger manager with the given log directory.
 func Init(logDir string) {
-	once.Do(func() {
+	initOnce.Do(func() {
 		defaultManager = &Manager{
 			loggers: make(map[string]*Logger),
 			logDir:  logDir,
@@ -47,7 +47,14 @@ func Init(logDir string) {
 }
 
 // GetServiceLogger returns a logger for the given service, writing to the service's log file.
+// Auto-initializes with default log directory if Init() was not called.
 func GetServiceLogger(serviceName string) *Logger {
+	initOnce.Do(func() {
+		defaultManager = &Manager{
+			loggers: make(map[string]*Logger),
+			logDir:  ".deployd/services",
+		}
+	})
 	return defaultManager.GetServiceLogger(serviceName)
 }
 
@@ -61,7 +68,14 @@ func (m *Manager) GetServiceLogger(serviceName string) *Logger {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	logPath := filepath.Join(homeDir, m.logDir, serviceName+".log")
+	logDir := filepath.Join(homeDir, m.logDir)
+
+	// Auto-create log directory
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return &Logger{writer: os.Stdout, prefix: fmt.Sprintf("[%s] ", serviceName)}
+	}
+
+	logPath := filepath.Join(logDir, serviceName+".log")
 
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
