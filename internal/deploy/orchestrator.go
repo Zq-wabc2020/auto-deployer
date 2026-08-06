@@ -6,6 +6,7 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/logger"
 	"github.com/auto-deployer/auto-deployer/internal/notify"
 )
 
@@ -29,6 +30,7 @@ type DeployResult struct {
 // fetch → getAuthorEmail → plugin.Build → plugin.Stop → plugin.Start → notify
 func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfig, deployer Deployer) (*DeployResult, error) {
 	result := &DeployResult{ServiceName: svc.Name}
+	log := logger.GetServiceLogger(svc.Name)
 
 	// 1. Fetch fresh code
 	keyFile, _, _, err := build.EnsureSSHKey()
@@ -38,7 +40,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		return result, fmt.Errorf(result.Error)
 	}
 
-	fmt.Printf("[deploy] fetching %s to %s...\n", svc.Repo.URL, svc.Workspace)
+	log.Printf("fetching %s to %s...", svc.Repo.URL, svc.Workspace)
 	if err := build.Fetch(svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace); err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
@@ -50,7 +52,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	authorEmail := build.GetLatestAuthorEmail(svc.Workspace, svc.Repo.Branch)
 
 	// 3. Build
-	fmt.Printf("[deploy] building %s...\n", svc.Name)
+	log.Printf("building %s...", svc.Name)
 	if err := deployer.Build(ctx, svc); err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
@@ -59,11 +61,11 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	}
 
 	// 4. Stop old instance
-	fmt.Printf("[deploy] stopping %s...\n", svc.Name)
+	log.Printf("stopping %s...", svc.Name)
 	_ = deployer.Stop(ctx, svc)
 
 	// 5. Start new instance
-	fmt.Printf("[deploy] starting %s...\n", svc.Name)
+	log.Printf("starting %s...", svc.Name)
 	if err := deployer.Start(ctx, svc); err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
@@ -74,7 +76,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	result.Status = "success"
 	result.AuthorEmail = authorEmail
 	sendNotify(ctx, cfg, svc, authorEmail, "success", "")
-	fmt.Printf("[deploy] %s deployed successfully\n", svc.Name)
+	log.Printf("%s deployed successfully", svc.Name)
 	return result, nil
 }
 
@@ -100,15 +102,16 @@ func GetServiceStatus(ctx context.Context, svc *config.ServiceConfig, deployer D
 }
 
 func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, authorEmail, status, errMsg string) {
+	log := logger.GetServiceLogger(svc.Name)
 	if notifier := buildNotifier(cfg, authorEmail); notifier != nil {
-		fmt.Printf("[deploy] sending notification to: %s\n", authorEmail)
+		log.Printf("sending notification to: %s", authorEmail)
 		if err := notifier.NotifyDeployResult(ctx, svc.Name, svc.Repo.Branch, authorEmail, status, errMsg); err != nil {
-			fmt.Printf("[deploy] warning: failed to send notification: %v\n", err)
+			log.Printf("warning: failed to send notification: %v", err)
 		} else {
-			fmt.Printf("[deploy] notification sent successfully\n")
+			log.Printf("notification sent successfully")
 		}
 	} else {
-		fmt.Printf("[deploy] no notifier configured (SMTP/Resend not set)\n")
+		log.Printf("no notifier configured (SMTP/Resend not set)")
 	}
 }
 
