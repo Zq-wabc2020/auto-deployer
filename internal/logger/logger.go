@@ -26,6 +26,11 @@ func (l *Logger) Fprintln(a ...interface{}) {
 	_, _ = l.writer.Write([]byte(msg))
 }
 
+// Write implements io.Writer interface.
+func (l *Logger) Write(p []byte) (n int, err error) {
+	return l.writer.Write(p)
+}
+
 // Manager provides service-specific loggers.
 type Manager struct {
 	mu      sync.Mutex
