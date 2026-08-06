@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -16,6 +17,8 @@ type Deployer interface {
 	Start(ctx context.Context, svc *config.ServiceConfig) error
 	Stop(ctx context.Context, svc *config.ServiceConfig) error
 	Status(ctx context.Context, svc *config.ServiceConfig) (string, error)
+	// SetOutput redirects stdout/stderr to the given writer (typically a service log file)
+	SetOutput(w io.Writer)
 }
 
 // DeployResult contains the result of a deployment operation.
@@ -31,6 +34,9 @@ type DeployResult struct {
 func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfig, deployer Deployer) (*DeployResult, error) {
 	result := &DeployResult{ServiceName: svc.Name}
 	log := logger.GetServiceLogger(svc.Name)
+
+	// Redirect plugin output to service log file
+	deployer.SetOutput(log)
 
 	// 1. Fetch fresh code
 	keyFile, _, _, err := build.EnsureSSHKey()

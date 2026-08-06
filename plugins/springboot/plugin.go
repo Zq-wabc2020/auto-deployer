@@ -15,16 +15,23 @@ import (
 )
 
 // Plugin implements the Deployer interface for Spring Boot applications.
-type Plugin struct{}
+type Plugin struct {
+	output io.Writer
+}
 
 // New creates a new Spring Boot plugin instance.
 func New() *Plugin {
-	return &Plugin{}
+	return &Plugin{output: os.Stdout}
 }
 
 // Type returns the plugin identifier.
 func (p *Plugin) Type() string {
 	return "springboot"
+}
+
+// SetOutput redirects stdout/stderr to the given writer.
+func (p *Plugin) SetOutput(w io.Writer) {
+	p.output = w
 }
 
 // Build executes the configured build command.
@@ -71,8 +78,8 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	// Set workspace as working directory
 	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Dir = svc.Workspace
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = p.output
+	cmd.Stderr = p.output
 
 	// Auto-detect Java version from .java-version file
 	if javaVersion := detectJavaVersion(svc.Workspace); javaVersion != "" {
@@ -82,8 +89,8 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 			parts[0] = javaBin
 			cmd = exec.Command(javaBin, parts[1:]...)
 			cmd.Dir = svc.Workspace
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
+			cmd.Stdout = p.output
+			cmd.Stderr = p.output
 			// Inherit current environment and add JAVA_HOME and PATH
 			cmd.Env = append(os.Environ(),
 				"JAVA_HOME="+javaHome,
