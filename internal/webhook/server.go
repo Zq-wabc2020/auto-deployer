@@ -69,7 +69,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := readBody(r)
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
@@ -120,9 +120,9 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 
 	deployResult, err := deploy.Deploy(ctx, matched, cfg, deployer)
 	if err != nil {
-		fmt.Printf("[deploy] deploy failed: %v\n", err)
+		fmt.Printf("[webhook] %s deploy failed\n", matched.Name)
 	} else {
-		fmt.Printf("[deploy] %s deployed: %s\n", matched.Name, deployResult.Status)
+		fmt.Printf("[webhook] %s deploy %s\n", matched.Name, deployResult.Status)
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
@@ -184,6 +184,21 @@ func MatchService(services []config.ServiceConfig, result *DispatchResult) *conf
 		}
 	}
 	return nil
+}
+
+// readBody extracts the JSON payload from the request body.
+// GitHub webhooks may be delivered as application/x-www-form-urlencoded with
+// the JSON in a "payload" form field, while Gitee and GitHub JSON deliveries
+// send raw JSON. Both are normalized to the raw JSON bytes here so that
+// ParsePayload only ever deals with JSON.
+func readBody(r *http.Request) ([]byte, error) {
+	if strings.Contains(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		return []byte(r.PostForm.Get("payload")), nil
+	}
+	return io.ReadAll(r.Body)
 }
 
 func detectSource(r *http.Request) string {

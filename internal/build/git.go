@@ -2,6 +2,7 @@ package build
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,7 +59,7 @@ func Clone(repoURL, keyFile, branch, destDir string) error {
 // Fetch clones or updates a specific branch using Jenkins-style approach:
 // git init → git remote add → git fetch → git checkout -f
 // This ensures a clean state every time, similar to Jenkins Git plugin.
-func Fetch(repoURL, keyFile, branch, destDir string) error {
+func Fetch(repoURL, keyFile, branch, destDir string, out io.Writer) error {
 	if err := ensureDir(destDir); err != nil {
 		return err
 	}
@@ -78,16 +79,16 @@ func Fetch(repoURL, keyFile, branch, destDir string) error {
 
 	// git init
 	initCmd := exec.Command("git", "init", destDir)
-	initCmd.Stdout = os.Stdout
-	initCmd.Stderr = os.Stderr
+	initCmd.Stdout = out
+	initCmd.Stderr = out
 	if err := initCmd.Run(); err != nil {
 		return fmt.Errorf("git init failed: %w", err)
 	}
 
 	// git remote add origin <url>
 	remoteCmd := exec.Command("git", "-C", destDir, "remote", "add", "origin", url)
-	remoteCmd.Stdout = os.Stdout
-	remoteCmd.Stderr = os.Stderr
+	remoteCmd.Stdout = out
+	remoteCmd.Stderr = out
 	if keyFile != "" {
 		remoteCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
 	}
@@ -97,8 +98,8 @@ func Fetch(repoURL, keyFile, branch, destDir string) error {
 
 	// git fetch --force --progress origin <branch>
 	fetchCmd := exec.Command("git", "-C", destDir, "fetch", "--force", "--progress", "origin", branch)
-	fetchCmd.Stdout = os.Stdout
-	fetchCmd.Stderr = os.Stderr
+	fetchCmd.Stdout = out
+	fetchCmd.Stderr = out
 	if keyFile != "" {
 		fetchCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
 	}
@@ -108,8 +109,8 @@ func Fetch(repoURL, keyFile, branch, destDir string) error {
 
 	// git checkout -f <branch>
 	checkoutCmd := exec.Command("git", "-C", destDir, "checkout", "-f", branch)
-	checkoutCmd.Stdout = os.Stdout
-	checkoutCmd.Stderr = os.Stderr
+	checkoutCmd.Stdout = out
+	checkoutCmd.Stderr = out
 	if keyFile != "" {
 		checkoutCmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+SSHCommand(keyFile))
 	}

@@ -1,6 +1,7 @@
 package build
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,7 +51,7 @@ func TestPull_UpdatesWorkingDir(t *testing.T) {
 	_ = runCmd(setupDir, "git", "push", bareDir, "main")
 
 	// Use Fetch (Jenkins-style)
-	err := Fetch(bareDir, "", "main", destDir)
+	err := Fetch(bareDir, "", "main", destDir, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

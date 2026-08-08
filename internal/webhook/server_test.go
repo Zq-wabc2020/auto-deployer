@@ -3,6 +3,7 @@ package webhook
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -32,6 +33,23 @@ func TestHandle_GiteePush(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestHandle_GitHubPush_FormEncoded(t *testing.T) {
+	// GitHub webhooks can be delivered as application/x-www-form-urlencoded
+	// with the JSON payload in the "payload" form field.
+	form := url.Values{}
+	form.Set("payload", `{"ref":"refs/heads/main","repository":{"clone_url":"https://github.com/user/repo.git"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(form.Encode()))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	rr := httptest.NewRecorder()
+	Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 for form-encoded GitHub push, got %d", rr.Code)
 	}
 }
 

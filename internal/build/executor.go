@@ -2,6 +2,7 @@ package build
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,8 @@ import (
 
 // ExecuteBuild runs the given shell command in the specified workspace directory.
 // It automatically sets JAVA_HOME if a .java-version file exists in the workspace.
-func ExecuteBuild(workspace, command string) error {
+// out receives the command output (typically a service log file).
+func ExecuteBuild(workspace, command string, out io.Writer) error {
 	if command == "" {
 		return fmt.Errorf("build command is empty")
 	}
@@ -22,8 +24,8 @@ func ExecuteBuild(workspace, command string) error {
 
 	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Dir = workspace
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = out
+	cmd.Stderr = out
 
 	// Auto-detect Java version from .java-version file
 	if javaVersion := detectJavaVersion(workspace); javaVersion != "" {
@@ -33,11 +35,11 @@ func ExecuteBuild(workspace, command string) error {
 		}
 	}
 
-	fmt.Printf("[build] executing: %s\n", command)
+	fmt.Fprintf(out, "[build] executing: %s\n", command)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
-	fmt.Println("[build] build completed successfully")
+	fmt.Fprintln(out, "[build] build completed successfully")
 	return nil
 }
 

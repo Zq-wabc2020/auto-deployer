@@ -1,6 +1,7 @@
 package build
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +12,7 @@ func TestExecuteBuild_Success(t *testing.T) {
 	script := filepath.Join(workspace, "build.sh")
 	_ = os.WriteFile(script, []byte("#!/bin/sh\necho 'building...'\nexit 0\n"), 0755)
 
-	err := ExecuteBuild(workspace, script)
+	err := ExecuteBuild(workspace, script, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,21 +23,21 @@ func TestExecuteBuild_Failure(t *testing.T) {
 	script := filepath.Join(workspace, "build.sh")
 	_ = os.WriteFile(script, []byte("#!/bin/sh\necho 'failing...'\nexit 1\n"), 0755)
 
-	err := ExecuteBuild(workspace, script)
+	err := ExecuteBuild(workspace, script, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for failing build")
 	}
 }
 
 func TestExecuteBuild_CommandNotFound(t *testing.T) {
-	err := ExecuteBuild("/tmp", "definitely-not-a-real-command-xyz")
+	err := ExecuteBuild("/tmp", "definitely-not-a-real-command-xyz", io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing command")
 	}
 }
 
 func TestExecuteBuild_EmptyCommand(t *testing.T) {
-	err := ExecuteBuild("/tmp", "")
+	err := ExecuteBuild("/tmp", "", io.Discard)
 	if err == nil {
 		t.Fatal("expected error for empty command")
 	}

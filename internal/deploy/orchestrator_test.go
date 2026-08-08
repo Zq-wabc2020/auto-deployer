@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -31,6 +32,7 @@ func (m *mockDeployer) Stop(ctx context.Context, svc *config.ServiceConfig) erro
 func (m *mockDeployer) Status(ctx context.Context, svc *config.ServiceConfig) (string, error) {
 	return m.status, nil
 }
+func (m *mockDeployer) SetOutput(w io.Writer) {}
 
 func TestServiceStart(t *testing.T) {
 	m := &mockDeployer{}

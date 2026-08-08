@@ -41,23 +41,23 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 		return fmt.Errorf("build command is empty")
 	}
 
-	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command); err != nil {
+	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command, p.output); err != nil {
 		return err
 	}
 
 	// Move built jar to workspace root
-	if err := moveJarToRoot(svc.Workspace); err != nil {
-		fmt.Printf("[springboot] warning: failed to move jar: %v\n", err)
+	if err := moveJarToRoot(svc.Workspace, p.output); err != nil {
+		fmt.Fprintf(p.output, "[springboot] warning: failed to move jar: %v\n", err)
 	}
 
 	// Clean up everything except jar file (source code removed after build)
 	if err := cleanWorkspace(svc.Workspace); err != nil {
-		fmt.Printf("[springboot] warning: failed to clean workspace: %v\n", err)
+		fmt.Fprintf(p.output, "[springboot] warning: failed to clean workspace: %v\n", err)
 	} else {
-		fmt.Printf("[springboot] cleaned workspace (source code removed)\n")
+		fmt.Fprintf(p.output, "[springboot] cleaned workspace (source code removed)\n")
 	}
 
-	fmt.Println("[springboot] build completed")
+	fmt.Fprintln(p.output, "[springboot] build completed")
 	return nil
 }
 
@@ -107,7 +107,7 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 		return err
 	}
 
-	fmt.Printf("started %s with pid %d\n", parts[0], cmd.Process.Pid)
+	fmt.Fprintf(p.output, "started %s with pid %d\n", parts[0], cmd.Process.Pid)
 	return nil
 }
 
@@ -115,6 +115,7 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 func (p *Plugin) Stop(ctx context.Context, svc *config.ServiceConfig) error {
 	pidFile := filepath.Join(daemonDir(), svc.Name+".pid")
 	mgr := process.NewManager(pidFile)
+	mgr.SetOutput(p.output)
 	return mgr.Stop()
 }
 
@@ -155,7 +156,7 @@ func findJavaHome(version string) string {
 }
 
 // moveJarToRoot finds the built jar in workspace/target/ and copies it to workspace root.
-func moveJarToRoot(workspace string) error {
+func moveJarToRoot(workspace string, out io.Writer) error {
 	targetDir := filepath.Join(workspace, "target")
 	entries, err := os.ReadDir(targetDir)
 	if err != nil {
@@ -168,7 +169,7 @@ func moveJarToRoot(workspace string) error {
 			if err := copyFile(src, dst); err != nil {
 				return fmt.Errorf("failed to copy jar %s: %w", entry.Name(), err)
 			}
-			fmt.Printf("[springboot] copied %s to %s\n", entry.Name(), workspace)
+			fmt.Fprintf(out, "[springboot] copied %s to %s\n", entry.Name(), workspace)
 			return nil
 		}
 	}

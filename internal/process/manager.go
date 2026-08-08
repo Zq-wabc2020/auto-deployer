@@ -2,6 +2,7 @@ package process
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,11 +14,19 @@ import (
 // Manager manages the lifecycle of a background process using a PID file.
 type Manager struct {
 	pidFilePath string
+	out         io.Writer
 }
 
 // NewManager creates a new process manager for the given PID file path.
+// Output of Start/Stop lifecycle messages defaults to os.Stdout; use SetOutput
+// to redirect (e.g. to a service log file during deployments).
 func NewManager(pidFilePath string) *Manager {
-	return &Manager{pidFilePath: pidFilePath}
+	return &Manager{pidFilePath: pidFilePath, out: os.Stdout}
+}
+
+// SetOutput redirects Start/Stop lifecycle messages to the given writer.
+func (m *Manager) SetOutput(w io.Writer) {
+	m.out = w
 }
 
 // Start launches a command and records its PID.
@@ -40,7 +49,7 @@ func (m *Manager) Start(name string, args ...string) error {
 		return err
 	}
 
-	fmt.Printf("started %s with pid %d\n", name, cmd.Process.Pid)
+	fmt.Fprintf(m.out, "started %s with pid %d\n", name, cmd.Process.Pid)
 	return nil
 }
 
@@ -65,7 +74,7 @@ func (m *Manager) Stop() error {
 	}
 
 	_ = m.CleanupPID()
-	fmt.Printf("stopped process %d\n", pid)
+	fmt.Fprintf(m.out, "stopped process %d\n", pid)
 	return nil
 }
 
