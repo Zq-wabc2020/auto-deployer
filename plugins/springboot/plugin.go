@@ -78,8 +78,10 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	// Set workspace as working directory
 	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Dir = svc.Workspace
-	cmd.Stdout = p.output
-	cmd.Stderr = p.output
+	// Option A: app runtime stdout/stderr is discarded; the service log holds
+	// deploy pipeline logs only. The app must log to its own file (e.g. logback).
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 
 	// Auto-detect Java version from .java-version file
 	if javaVersion := detectJavaVersion(svc.Workspace); javaVersion != "" {
@@ -89,8 +91,8 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 			parts[0] = javaBin
 			cmd = exec.Command(javaBin, parts[1:]...)
 			cmd.Dir = svc.Workspace
-			cmd.Stdout = p.output
-			cmd.Stderr = p.output
+			cmd.Stdout = nil
+			cmd.Stderr = nil
 			// Inherit current environment and add JAVA_HOME and PATH
 			cmd.Env = append(os.Environ(),
 				"JAVA_HOME="+javaHome,

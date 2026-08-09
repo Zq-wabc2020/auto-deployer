@@ -12,7 +12,7 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploy"
-	"github.com/auto-deployer/auto-deployer/internal/notify"
+	"github.com/auto-deployer/auto-deployer/internal/deployqueue"
 	"github.com/auto-deployer/auto-deployer/plugins/springboot"
 )
 
@@ -105,12 +105,11 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	result.ServiceName = matched.Name
 	fmt.Printf("[webhook] matched service: %s\n", result.ServiceName)
 
-	// Dispatch to orchestrator for build + restart
-	ctx := context.Background()
-	var deployer deploy.Deployer
+	// Validate service type up front so a misconfigured service doesn't keep
+	// queuing undeployable tasks.
 	switch matched.Type {
 	case "springboot":
-		deployer = springboot.New()
+		// ok
 	default:
 		fmt.Printf("[webhook] unknown service type: %s\n", matched.Type)
 		w.WriteHeader(http.StatusOK)
@@ -118,11 +117,24 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deployResult, err := deploy.Deploy(ctx, matched, cfg, deployer)
-	if err != nil {
-		fmt.Printf("[webhook] %s deploy failed\n", matched.Name)
+	// Submit to the per-service coalescing queue. The queue serializes same-
+	// service deploys and merges rapid triggers; ExecuteDeploy runs the pipeline.
+	task := deployqueue.Task{
+		ServiceName: matched.Name,
+		Branch:      result.Branch,
+		RepoURL:     result.RepoURL,
+		AuthorEmail: result.AuthorEmail,
+		Source:      source,
+	}
+	if scheduler != nil {
+		scheduler.Submit(task)
+		fmt.Printf("[webhook] %s deploy queued (pending: %d)\n", matched.Name, scheduler.Pending(matched.Name))
 	} else {
-		fmt.Printf("[webhook] %s deploy %s\n", matched.Name, deployResult.Status)
+		// Fallback when no scheduler is wired (e.g. tests): run directly.
+		go func() {
+			_ = ExecuteDeploy(context.Background(), task, []string{task.AuthorEmail})
+		}()
+		fmt.Printf("[webhook] %s deploy started (no queue)\n", matched.Name)
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
@@ -229,26 +241,40 @@ func loadConfig() (*config.AppConfig, error) {
 	return config.Load(configPath)
 }
 
-// buildNotifier creates a Notifier from config.
-// Always includes authorEmail as the default recipient.
-// notifications.To are additional recipients appended to the list.
-// Returns nil only if no notification provider (SMTP or Resend) is configured.
-func buildNotifier(cfg *config.AppConfig, authorEmail string) *notify.Notifier {
-	hasSMTP := cfg != nil && cfg.SMTP.Host != ""
-	hasResend := cfg != nil && cfg.Resend.APIKey != ""
-	if !hasSMTP && !hasResend {
-		return nil
+var scheduler *deployqueue.Scheduler
+
+// SetScheduler sets the deploy queue scheduler used to serialize and merge
+// same-service webhook deploys. If not set, Handle falls back to running the
+// deploy directly (used by tests).
+func SetScheduler(s *deployqueue.Scheduler) {
+	scheduler = s
+}
+
+// ExecuteDeploy is the scheduler's deploy executor: it loads the config, finds
+// the service by name, creates the deployer, and runs the pipeline with the
+// merged operator emails as notification recipients.
+func ExecuteDeploy(ctx context.Context, task deployqueue.Task, operatorEmails []string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
 	}
-	recipients := []string{authorEmail}
-	recipients = append(recipients, cfg.Notifications.To...)
-	return notify.New(
-		cfg.SMTP.Host,
-		cfg.SMTP.Port,
-		cfg.SMTP.Username,
-		cfg.SMTP.Token,
-		cfg.SMTP.TLS,
-		cfg.Resend.APIKey,
-		cfg.Resend.From,
-		recipients,
-	)
+	var svc *config.ServiceConfig
+	for i := range cfg.Services {
+		if cfg.Services[i].Name == task.ServiceName {
+			svc = &cfg.Services[i]
+			break
+		}
+	}
+	if svc == nil {
+		return fmt.Errorf("service %s not found in config", task.ServiceName)
+	}
+	var deployer deploy.Deployer
+	switch svc.Type {
+	case "springboot":
+		deployer = springboot.New()
+	default:
+		return fmt.Errorf("unknown service type: %s", svc.Type)
+	}
+	_, err = deploy.Deploy(ctx, svc, cfg, deployer, operatorEmails)
+	return err
 }

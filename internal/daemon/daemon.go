@@ -10,6 +10,7 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/deployqueue"
 	"github.com/auto-deployer/auto-deployer/internal/logger"
 	"github.com/auto-deployer/auto-deployer/internal/process"
 	"github.com/auto-deployer/auto-deployer/internal/webhook"
@@ -107,6 +108,9 @@ func Start(configPath string) error {
 	// 10. Start webhook server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	webhook.SetConfigPath(configPath)
+	// Per-service coalescing queue: serializes same-service webhook deploys and
+	// merges rapid triggers; manual deploys coordinate via the deploy file lock.
+	webhook.SetScheduler(deployqueue.NewScheduler(webhook.ExecuteDeploy))
 
 	http.HandleFunc("/webhook", webhook.Handle)
 

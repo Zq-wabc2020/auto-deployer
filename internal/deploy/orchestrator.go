@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -31,13 +32,18 @@ type DeployResult struct {
 
 // Deploy executes the full deployment pipeline:
 // fetch → getAuthorEmail → plugin.Build → plugin.Stop → plugin.Start → notify
-func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfig, deployer Deployer) (*DeployResult, error) {
+func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfig, deployer Deployer, operatorEmails []string) (*DeployResult, error) {
 	result := &DeployResult{ServiceName: svc.Name}
 
 	// All deploy pipeline output goes to the service log file so that both
 	// manual and webhook triggers share the same per-service log destination.
 	log := logger.GetServiceLogger(svc.Name)
 	deployer.SetOutput(log)
+
+	// Notification recipients: operators who triggered this deploy (merged by
+	// the queue for webhooks). For a direct manual trigger (none provided) the
+	// fetched commit author is used as the recipient (set after fetch below).
+	recipients := operatorEmails
 
 	// 1. Fetch fresh code
 	keyFile, _, _, err := build.EnsureSSHKey()
@@ -53,12 +59,16 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("fetch failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, "", "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, "", "failed", err.Error())
 		return result, err
 	}
 
-	// 2. Get author email from latest commit
+	// 2. Get author email from latest commit (used for the notification body and
+	// as the recipient fallback for direct manual triggers).
 	authorEmail := build.GetLatestAuthorEmail(svc.Workspace, svc.Repo.Branch)
+	if len(recipients) == 0 {
+		recipients = []string{authorEmail}
+	}
 
 	// 3. Build
 	log.Printf("building %s...", svc.Name)
@@ -66,7 +76,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("build failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, authorEmail, "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, "failed", err.Error())
 		return result, err
 	}
 
@@ -80,13 +90,13 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("start failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, authorEmail, "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, "failed", err.Error())
 		return result, err
 	}
 
 	result.Status = "success"
 	result.AuthorEmail = authorEmail
-	sendNotify(ctx, cfg, svc, log, authorEmail, "success", "")
+	sendNotify(ctx, cfg, svc, log, recipients, authorEmail, "success", "")
 	log.Printf("%s deployed successfully", svc.Name)
 	return result, nil
 }
@@ -112,9 +122,13 @@ func GetServiceStatus(ctx context.Context, svc *config.ServiceConfig, deployer D
 	return deployer.Status(ctx, svc)
 }
 
-func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, log *logger.Logger, authorEmail, status, errMsg string) {
-	if notifier := buildNotifier(cfg, authorEmail); notifier != nil {
-		log.Printf("sending notification to: %s", authorEmail)
+func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, log *logger.Logger, recipients []string, authorEmail, status, errMsg string) {
+	if notifier := buildNotifier(cfg, recipients); notifier != nil {
+		to := strings.Join(recipients, ", ")
+		if to == "" {
+			to = "(configured subscribers only)"
+		}
+		log.Printf("sending notification to: %s", to)
 		if err := notifier.NotifyDeployResult(ctx, svc.Name, svc.Repo.Branch, authorEmail, status, errMsg); err != nil {
 			log.Printf("warning: failed to send notification: %v", err)
 		} else {
@@ -125,15 +139,16 @@ func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceC
 	}
 }
 
-// buildNotifier creates a Notifier from config.
-func buildNotifier(cfg *config.AppConfig, authorEmail string) *notify.Notifier {
+// buildNotifier creates a Notifier from config. Recipients are the deploy
+// operators (merged by the queue); configured notifications.to are appended.
+func buildNotifier(cfg *config.AppConfig, recipients []string) *notify.Notifier {
 	hasSMTP := cfg != nil && cfg.SMTP.Host != ""
 	hasResend := cfg != nil && cfg.Resend.APIKey != ""
 	if !hasSMTP && !hasResend {
 		return nil
 	}
-	recipients := []string{authorEmail}
-	recipients = append(recipients, cfg.Notifications.To...)
+	all := append([]string{}, recipients...)
+	all = append(all, cfg.Notifications.To...)
 	return notify.New(
 		cfg.SMTP.Host,
 		cfg.SMTP.Port,
@@ -142,6 +157,6 @@ func buildNotifier(cfg *config.AppConfig, authorEmail string) *notify.Notifier {
 		cfg.SMTP.TLS,
 		cfg.Resend.APIKey,
 		cfg.Resend.From,
-		recipients,
+		all,
 	)
 }
