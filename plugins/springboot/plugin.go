@@ -37,11 +37,11 @@ func (p *Plugin) SetOutput(w io.Writer) {
 // Build executes the configured build command.
 // Git fetch is handled by the orchestrator before calling this method.
 func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
-	if svc.Build.Command == "" {
+	if svc.Build.Command.Empty() {
 		return fmt.Errorf("build command is empty")
 	}
 
-	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command, p.output); err != nil {
+	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command.String(), p.output); err != nil {
 		return err
 	}
 

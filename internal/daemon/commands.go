@@ -192,7 +192,7 @@ func TriggerDeploy(serviceName, configPath string) error {
 
 	// TODO: full deploy flow — git pull → build → stop → start
 	fmt.Printf("[deploy] workspace: %s\n", svc.Workspace)
-	fmt.Printf("[deploy] build command: %s\n", svc.Build.Command)
+	fmt.Printf("[deploy] build command: %s\n", svc.Build.Command.String())
 	fmt.Printf("[deploy] run command: %s\n", svc.Run.Command)
 
 	// Send success notification (placeholder: deploy not yet implemented)

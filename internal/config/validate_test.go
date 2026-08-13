@@ -11,11 +11,10 @@ func TestValidate_ValidConfig(t *testing.T) {
 		Services: []ServiceConfig{
 			{
 				Name:      "my-app",
-				Type:      "springboot",
+				Type:      "jvm",
 				Repo:      RepoConfig{URL: "https://github.com/u/r.git", Branch: "main"},
 				Workspace: "/tmp/app",
-				Build:     BuildConfig{Command: "mvn package"},
-				Run:       RunConfig{Command: "java -jar target/app.jar"},
+				Build:     BuildConfig{Command: Command{"mvn package"}},
 			},
 		},
 	}
@@ -26,9 +25,27 @@ func TestValidate_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidate_SpringbootAlias(t *testing.T) {
+	cfg := &AppConfig{
+		Services: []ServiceConfig{{
+			Name:      "app",
+			Type:      "springboot",
+			Repo:      RepoConfig{URL: "https://github.com/u/r.git", Branch: "main"},
+			Workspace: "/tmp/app",
+			Build:     BuildConfig{Command: Command{"mvn package"}},
+		}},
+	}
+	errs := Validate(cfg)
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "type") {
+			t.Errorf("springboot should be accepted as jvm alias, got: %v", e)
+		}
+	}
+}
+
 func TestValidate_MissingName(t *testing.T) {
 	cfg := &AppConfig{
-		Services: []ServiceConfig{{Type: "springboot"}},
+		Services: []ServiceConfig{{Type: "jvm"}},
 	}
 
 	errs := Validate(cfg)
@@ -62,7 +79,7 @@ func TestValidate_UnknownType(t *testing.T) {
 
 func TestValidate_MissingRepoURL(t *testing.T) {
 	cfg := &AppConfig{
-		Services: []ServiceConfig{{Name: "app", Type: "springboot"}},
+		Services: []ServiceConfig{{Name: "app", Type: "jvm"}},
 	}
 
 	errs := Validate(cfg)
@@ -81,7 +98,7 @@ func TestValidate_MissingWorkspace(t *testing.T) {
 	cfg := &AppConfig{
 		Services: []ServiceConfig{{
 			Name: "app",
-			Type: "springboot",
+			Type: "jvm",
 			Repo: RepoConfig{URL: "https://github.com/u/r.git"},
 		}},
 	}
@@ -102,10 +119,9 @@ func TestValidate_MissingBuildCommand(t *testing.T) {
 	cfg := &AppConfig{
 		Services: []ServiceConfig{{
 			Name:      "app",
-			Type:      "springboot",
+			Type:      "jvm",
 			Repo:      RepoConfig{URL: "https://github.com/u/r.git", Branch: "main"},
 			Workspace: "/tmp/app",
-			Run:       RunConfig{Command: "java -jar app.jar"},
 		}},
 	}
 
@@ -121,26 +137,40 @@ func TestValidate_MissingBuildCommand(t *testing.T) {
 	}
 }
 
-func TestValidate_MissingRunCommand(t *testing.T) {
+func TestValidate_RunCommandNotRequired(t *testing.T) {
+	// run.command 已下沉为 deploy.run，不再在通用层必填。
 	cfg := &AppConfig{
 		Services: []ServiceConfig{{
 			Name:      "app",
-			Type:      "springboot",
+			Type:      "jvm",
 			Repo:      RepoConfig{URL: "https://github.com/u/r.git", Branch: "main"},
 			Workspace: "/tmp/app",
-			Build:     BuildConfig{Command: "mvn package"},
+			Build:     BuildConfig{Command: Command{"mvn package"}},
 		}},
 	}
 
 	errs := Validate(cfg)
-	found := false
 	for _, e := range errs {
 		if strings.Contains(e.Error(), "run.command") {
-			found = true
+			t.Errorf("run.command should not be required, got: %v", e)
 		}
 	}
-	if !found {
-		t.Error("expected error mentioning 'run.command'")
+}
+
+func TestValidate_BuildCommandList(t *testing.T) {
+	// build.command 支持列表形式。
+	cfg := &AppConfig{
+		Services: []ServiceConfig{{
+			Name:      "app",
+			Type:      "jvm",
+			Repo:      RepoConfig{URL: "https://github.com/u/r.git", Branch: "main"},
+			Workspace: "/tmp/app",
+			Build:     BuildConfig{Command: Command{"npm ci", "npm run build"}},
+		}},
+	}
+	errs := Validate(cfg)
+	if len(errs) != 0 {
+		t.Errorf("expected no errors for list-form build command, got %v", errs)
 	}
 }
 
@@ -149,11 +179,10 @@ func TestValidate_MultipleServices(t *testing.T) {
 		Services: []ServiceConfig{
 			{
 				Name:      "app1",
-				Type:      "springboot",
+				Type:      "jvm",
 				Repo:      RepoConfig{URL: "https://github.com/u/r1.git", Branch: "main"},
 				Workspace: "/tmp/app1",
-				Build:     BuildConfig{Command: "mvn package"},
-				Run:       RunConfig{Command: "java -jar app1.jar"},
+				Build:     BuildConfig{Command: Command{"mvn package"}},
 			},
 			{
 				Name:      "",
@@ -161,7 +190,6 @@ func TestValidate_MultipleServices(t *testing.T) {
 				Repo:      RepoConfig{},
 				Workspace: "",
 				Build:     BuildConfig{},
-				Run:       RunConfig{},
 			},
 		},
 	}
@@ -175,7 +203,7 @@ func TestValidate_MultipleServices(t *testing.T) {
 func TestValidate_SMTPMissing(t *testing.T) {
 	cfg := &AppConfig{
 		Server:   ServerConfig{Host: "0.0.0.0", Port: 9527},
-		Services: []ServiceConfig{{Name: "test", Type: "springboot", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: "true"}, Run: RunConfig{Command: "true"}}},
+		Services: []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}}},
 		Notifications: NotificationConfig{To: []string{"a@b.com"}},
 		SMTP:       SMTPConfig{}, // empty
 	}
@@ -191,7 +219,7 @@ func TestValidate_SMTPMissing(t *testing.T) {
 func TestValidate_SMTPComplete(t *testing.T) {
 	cfg := &AppConfig{
 		Server:   ServerConfig{Host: "0.0.0.0", Port: 9527},
-		Services: []ServiceConfig{{Name: "test", Type: "springboot", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: "true"}, Run: RunConfig{Command: "true"}}},
+		Services: []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}}},
 		Notifications: NotificationConfig{To: []string{"a@b.com"}},
 		SMTP:       SMTPConfig{Host: "smtp.qq.com", Port: 465, Username: "x@qq.com", Token: "abc"},
 	}
@@ -204,7 +232,7 @@ func TestValidate_SMTPComplete(t *testing.T) {
 func TestValidate_SMTPNotRequiredWhenNoTo(t *testing.T) {
 	cfg := &AppConfig{
 		Server:        ServerConfig{Host: "0.0.0.0", Port: 9527},
-		Services:      []ServiceConfig{{Name: "test", Type: "springboot", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: "true"}, Run: RunConfig{Command: "true"}}},
+		Services:      []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}}},
 		Notifications: NotificationConfig{To: nil},
 		SMTP:          SMTPConfig{}, // empty, but to is empty so OK
 	}

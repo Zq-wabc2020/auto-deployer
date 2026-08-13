@@ -65,8 +65,8 @@ services:
 	if svc.Workspace != "/opt/deployd/apps/test-service" {
 		t.Errorf("expected workspace '/opt/deployd/apps/test-service', got '%s'", svc.Workspace)
 	}
-	if svc.Build.Command != "mvn package -DskipTests" {
-		t.Errorf("expected build command 'mvn package -DskipTests', got '%s'", svc.Build.Command)
+	if svc.Build.Command.String() != "mvn package -DskipTests" {
+		t.Errorf("expected build command 'mvn package -DskipTests', got '%s'", svc.Build.Command.String())
 	}
 	if svc.Run.Command != "java -jar test-service.jar" {
 		t.Errorf("expected run command 'java -jar test-service.jar', got '%s'", svc.Run.Command)

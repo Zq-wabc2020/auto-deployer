@@ -21,7 +21,7 @@ func TestBuild_NoCommand(t *testing.T) {
 	p := New()
 	svc := &config.ServiceConfig{
 		Workspace: t.TempDir(),
-		Build:     config.BuildConfig{Command: ""},
+		Build:     config.BuildConfig{Command: config.Command{}},
 	}
 	err := p.Build(context.Background(), svc)
 	if err == nil {
@@ -55,7 +55,7 @@ func TestBuild_WithScript(t *testing.T) {
 
 	svc := &config.ServiceConfig{
 		Workspace: workspace,
-		Build:     config.BuildConfig{Command: script},
+		Build:     config.BuildConfig{Command: config.Command{script}},
 		Repo:      config.RepoConfig{URL: bareDir, Branch: "main"},
 	}
 	buildErr := p.Build(context.Background(), svc)

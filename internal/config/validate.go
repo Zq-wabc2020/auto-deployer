@@ -5,7 +5,8 @@ import (
 )
 
 var supportedTypes = map[string]bool{
-	"springboot": true,
+	"jvm":        true,
+	"springboot": true, // 兼容别名
 }
 
 func Validate(cfg *AppConfig) []error {
@@ -16,7 +17,7 @@ func Validate(cfg *AppConfig) []error {
 			errs = append(errs, fmt.Errorf("%s: name is required", prefix))
 		}
 		if !supportedTypes[svc.Type] {
-			errs = append(errs, fmt.Errorf("%s: unknown type %q (supported: springboot)", prefix, svc.Type))
+			errs = append(errs, fmt.Errorf("%s: unknown type %q (supported: jvm)", prefix, svc.Type))
 		}
 		if svc.Repo.URL == "" {
 			errs = append(errs, fmt.Errorf("%s: repo.url is required", prefix))
@@ -27,12 +28,10 @@ func Validate(cfg *AppConfig) []error {
 		if svc.Workspace == "" {
 			errs = append(errs, fmt.Errorf("%s: workspace is required", prefix))
 		}
-		if svc.Build.Command == "" {
+		if svc.Build.Command.Empty() {
 			errs = append(errs, fmt.Errorf("%s: build.command is required", prefix))
 		}
-		if svc.Run.Command == "" {
-			errs = append(errs, fmt.Errorf("%s: run.command is required", prefix))
-		}
+		// run.command 不再必填：已下沉为 deploy.run，由对应插件解析校验
 	}
 
 	// Validate notification config: need either SMTP or Resend

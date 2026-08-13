@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -39,10 +40,54 @@ type RepoConfig struct {
 	Branch string `yaml:"branch"`
 }
 
-type BuildConfig struct {
-	Command string `yaml:"command"`
+// Command is a build/run command that accepts either a single string or a list
+// of strings in YAML. The list form runs commands sequentially.
+type Command []string
+
+// UnmarshalYAML allows Command to be parsed from a string or a list of strings.
+func (c *Command) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var single string
+	if err := unmarshal(&single); err == nil {
+		*c = []string{single}
+		return nil
+	}
+	var multi []string
+	if err := unmarshal(&multi); err != nil {
+		return err
+	}
+	*c = multi
+	return nil
 }
 
+// MarshalYAML emits a single command as a string, multiple as a list.
+func (c Command) MarshalYAML() (interface{}, error) {
+	if len(c) == 1 {
+		return c[0], nil
+	}
+	return []string(c), nil
+}
+
+// String joins commands with " && " for display and single-command execution.
+func (c Command) String() string {
+	return strings.Join(c, " && ")
+}
+
+// Slice returns the underlying command list.
+func (c Command) Slice() []string {
+	return c
+}
+
+// Empty reports whether no command is configured.
+func (c Command) Empty() bool {
+	return len(c) == 0
+}
+
+type BuildConfig struct {
+	Command Command `yaml:"command"`
+}
+
+// RunConfig retained temporarily for incremental migration; new configs use
+// deploy.run (parsed by the plugin). Removed once the plugin switches.
 type RunConfig struct {
 	Command string `yaml:"command"`
 }
@@ -53,7 +98,8 @@ type ServiceConfig struct {
 	Repo      RepoConfig  `yaml:"repo"`
 	Workspace string      `yaml:"workspace"`
 	Build     BuildConfig `yaml:"build"`
-	Run       RunConfig   `yaml:"run"`
+	Run       RunConfig   `yaml:"run"`    // 保留以兼容渐进迁移；新配置改用 deploy.run
+	Deploy    *yaml.Node  `yaml:"deploy"` // 策略层原始节点，由对应类型插件自解析
 }
 
 type AppConfig struct {

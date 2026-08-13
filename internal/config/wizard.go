@@ -84,7 +84,7 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 			Type:      svcType,
 			Repo:      RepoConfig{URL: repoURL, Branch: branch},
 			Workspace: workspace,
-			Build:     BuildConfig{Command: buildCmd},
+			Build:     BuildConfig{Command: Command{buildCmd}},
 			Run:       RunConfig{Command: runCmd},
 		}},
 	}
