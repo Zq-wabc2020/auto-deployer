@@ -26,12 +26,25 @@ func TestBuildSubject_Failure(t *testing.T) {
 
 func TestBuildBody_ContainsFields(t *testing.T) {
 	n := New("smtp.test.com", 587, "u", "t", false, "", "", []string{"admin@test.com"})
-	body := n.buildBody("my-app", "main", "dev@example.com", "failed", "build failed: exit 1")
+	body := n.buildBody(DeployNotice{
+		ServiceName: "my-app",
+		Branch:      "main",
+		CommitInfo:  "feat: add login",
+		AuthorEmail: "dev@example.com",
+		Status:      "failed",
+		ErrMsg:      "build failed: exit 1",
+	})
 	if !strings.Contains(body, "my-app") {
 		t.Error("body should contain service name")
 	}
 	if !strings.Contains(body, "main") {
 		t.Error("body should contain branch")
+	}
+	if !strings.Contains(body, "提交记录") {
+		t.Error("body should contain commit info row")
+	}
+	if !strings.Contains(body, "feat: add login") {
+		t.Error("body should contain commit info content")
 	}
 	if !strings.Contains(body, "dev@example.com") {
 		t.Error("body should contain author email")
@@ -39,11 +52,31 @@ func TestBuildBody_ContainsFields(t *testing.T) {
 	if !strings.Contains(body, "build failed: exit 1") {
 		t.Error("body should contain error message")
 	}
+	// commit info must appear right after branch, before status
+	if strings.Index(body, "提交记录") < strings.Index(body, "main") {
+		t.Error("commit info should come after branch")
+	}
+}
+
+func TestBuildBody_NoCommitInfo(t *testing.T) {
+	n := New("smtp.test.com", 587, "u", "t", false, "", "", []string{"admin@test.com"})
+	body := n.buildBody(DeployNotice{
+		ServiceName: "my-app",
+		Branch:      "main",
+		Status:      "success",
+	})
+	if strings.Contains(body, "提交记录") {
+		t.Error("body should not contain commit info row when empty")
+	}
 }
 
 func TestBuildBody_NoAuthorEmail(t *testing.T) {
 	n := New("smtp.test.com", 587, "u", "t", false, "", "", []string{"admin@test.com"})
-	body := n.buildBody("my-app", "main", "", "success", "")
+	body := n.buildBody(DeployNotice{
+		ServiceName: "my-app",
+		Branch:      "main",
+		Status:      "success",
+	})
 	if strings.Contains(body, "变更者") {
 		t.Error("body should not contain author section when email is empty")
 	}
@@ -107,7 +140,11 @@ func TestNotifyDeployResult_SkipsEmptyAuthor(t *testing.T) {
 	ctx := context.Background()
 	n := New("smtp.test.com", 587, "u", "t", false, "", "", []string{"admin@test.com"})
 
-	err := n.NotifyDeployResult(ctx, "test-svc", "main", "", "success", "")
+	err := n.NotifyDeployResult(ctx, DeployNotice{
+		ServiceName: "test-svc",
+		Branch:      "main",
+		Status:      "success",
+	})
 	if err == nil {
 		t.Fatal("expected connection error")
 	}

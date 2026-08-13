@@ -178,12 +178,20 @@ func (n *Notifier) sendResend(subject, body string) error {
 	return nil
 }
 
+// DeployNotice carries the information rendered in a deployment result email.
+type DeployNotice struct {
+	ServiceName string
+	Branch      string
+	CommitInfo  string // latest commit subject, e.g. "feat: add login"
+	AuthorEmail string // operator / commit author
+	Status      string // "success" | "failed" | "running"
+	ErrMsg      string
+}
+
 // NotifyDeployResult assembles and sends a deployment result email.
-// Recipients are set by buildNotifier: authorEmail is the default recipient,
-// notifications.to are additional recipients.
-func (n *Notifier) NotifyDeployResult(ctx context.Context, svcName, branch, authorEmail, status, errMsg string) error {
-	subject := n.buildSubject(svcName, status)
-	body := n.buildBody(svcName, branch, authorEmail, status, errMsg)
+func (n *Notifier) NotifyDeployResult(ctx context.Context, notice DeployNotice) error {
+	subject := n.buildSubject(notice.ServiceName, notice.Status)
+	body := n.buildBody(notice)
 	return n.Send(ctx, subject, body)
 }
 
@@ -194,23 +202,26 @@ func (n *Notifier) buildSubject(svcName, status string) string {
 	return fmt.Sprintf("[deployd] ✅ 部署成功: %s", svcName)
 }
 
-func (n *Notifier) buildBody(svcName, branch, authorEmail, status, errMsg string) string {
+func (n *Notifier) buildBody(notice DeployNotice) string {
 	ts := time.Now().Format("2006-01-02 15:04:05")
 	var sb strings.Builder
 
 	sb.WriteString("<html><body style='font-family: sans-serif;'>")
 	sb.WriteString("<h2>部署通知</h2>")
 	sb.WriteString("<table border='0' cellpadding='4' cellspacing='0' style='border-collapse: collapse;'>")
-	sb.WriteString(n.row("服务名", svcName))
-	sb.WriteString(n.row("分支", branch))
-	sb.WriteString(n.row("状态", status))
-	sb.WriteString(n.row("时间", ts))
-	if authorEmail != "" {
-		sb.WriteString(n.row("变更者", authorEmail))
+	sb.WriteString(n.row("服务名", notice.ServiceName))
+	sb.WriteString(n.row("分支", notice.Branch))
+	if notice.CommitInfo != "" {
+		sb.WriteString(n.row("提交记录", notice.CommitInfo))
 	}
-	if status == "failed" {
+	sb.WriteString(n.row("状态", notice.Status))
+	sb.WriteString(n.row("时间", ts))
+	if notice.AuthorEmail != "" {
+		sb.WriteString(n.row("变更者", notice.AuthorEmail))
+	}
+	if notice.Status == "failed" {
 		sb.WriteString(n.row("失败阶段", "未知"))
-		sb.WriteString(n.row("错误信息", errMsg))
+		sb.WriteString(n.row("错误信息", notice.ErrMsg))
 	}
 	sb.WriteString("</table>")
 	sb.WriteString("</body></html>")

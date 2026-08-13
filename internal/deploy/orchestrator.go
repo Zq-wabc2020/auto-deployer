@@ -44,6 +44,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	// the queue for webhooks). For a direct manual trigger (none provided) the
 	// fetched commit author is used as the recipient (set after fetch below).
 	recipients := operatorEmails
+	commitInfo := ""
 
 	// 1. Fetch fresh code
 	keyFile, _, _, err := build.EnsureSSHKey()
@@ -59,13 +60,14 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("fetch failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, "", "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, "", commitInfo, "failed", err.Error())
 		return result, err
 	}
 
 	// 2. Get author email from latest commit (used for the notification body and
 	// as the recipient fallback for direct manual triggers).
 	authorEmail := build.GetLatestAuthorEmail(svc.Workspace, svc.Repo.Branch)
+	commitInfo = build.GetLatestCommit(svc.Workspace, svc.Repo.Branch)
 	if len(recipients) == 0 {
 		recipients = []string{authorEmail}
 	}
@@ -76,7 +78,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("build failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "failed", err.Error())
 		return result, err
 	}
 
@@ -90,13 +92,13 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("start failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "failed", err.Error())
 		return result, err
 	}
 
 	result.Status = "success"
 	result.AuthorEmail = authorEmail
-	sendNotify(ctx, cfg, svc, log, recipients, authorEmail, "success", "")
+	sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "success", "")
 	log.Printf("%s deployed successfully", svc.Name)
 	return result, nil
 }
@@ -122,14 +124,22 @@ func GetServiceStatus(ctx context.Context, svc *config.ServiceConfig, deployer D
 	return deployer.Status(ctx, svc)
 }
 
-func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, log *logger.Logger, recipients []string, authorEmail, status, errMsg string) {
+func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, log *logger.Logger, recipients []string, authorEmail, commitInfo, status, errMsg string) {
 	if notifier := buildNotifier(cfg, recipients); notifier != nil {
 		to := strings.Join(recipients, ", ")
 		if to == "" {
 			to = "(configured subscribers only)"
 		}
 		log.Printf("sending notification to: %s", to)
-		if err := notifier.NotifyDeployResult(ctx, svc.Name, svc.Repo.Branch, authorEmail, status, errMsg); err != nil {
+		notice := notify.DeployNotice{
+			ServiceName: svc.Name,
+			Branch:      svc.Repo.Branch,
+			CommitInfo:  commitInfo,
+			AuthorEmail: authorEmail,
+			Status:      status,
+			ErrMsg:      errMsg,
+		}
+		if err := notifier.NotifyDeployResult(ctx, notice); err != nil {
 			log.Printf("warning: failed to send notification: %v", err)
 		} else {
 			log.Printf("notification sent successfully")

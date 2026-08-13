@@ -135,3 +135,15 @@ func GetLatestAuthorEmail(workspace, branch string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// GetLatestCommit returns the subject of the latest commit on the checked-out
+// branch (the message filled in when committing), for inclusion in deployment
+// notifications. Returns "" if unavailable.
+func GetLatestCommit(workspace, branch string) string {
+	cmd := exec.Command("git", "-C", workspace, "log", "-1", "--format=%s")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}

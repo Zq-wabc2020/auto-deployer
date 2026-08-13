@@ -182,7 +182,11 @@ func TriggerDeploy(serviceName, configPath string) error {
 	notifier := buildNotifier(cfg, "")
 	if notifier != nil {
 		go func() {
-			_ = notifier.NotifyDeployResult(context.Background(), svc.Name, svc.Repo.Branch, "", "running", "")
+			_ = notifier.NotifyDeployResult(context.Background(), notify.DeployNotice{
+			ServiceName: svc.Name,
+			Branch:      svc.Repo.Branch,
+			Status:      "running",
+		})
 		}()
 	}
 
@@ -194,7 +198,11 @@ func TriggerDeploy(serviceName, configPath string) error {
 	// Send success notification (placeholder: deploy not yet implemented)
 	if notifier != nil {
 		go func() {
-			_ = notifier.NotifyDeployResult(context.Background(), svc.Name, svc.Repo.Branch, "", "success", "")
+			_ = notifier.NotifyDeployResult(context.Background(), notify.DeployNotice{
+			ServiceName: svc.Name,
+			Branch:      svc.Repo.Branch,
+			Status:      "success",
+		})
 		}()
 	}
 
