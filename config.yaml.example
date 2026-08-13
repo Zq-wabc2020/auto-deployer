@@ -1,51 +1,98 @@
-# deployd global configuration
+# deployd 全局配置
+#
+# 配置按"部署模型"(type)组织服务。type 决定 deploy: 块的结构。
+# 通用字段（所有模型）：name / type / repo / workspace / build
+# 策略字段（deploy:）：结构由 type 决定，由对应插件解析
 
-# 监听地址和端口
-# host: "0.0.0.0" = 监听所有网卡（允许外部访问）
-# host: "127.0.0.1" = 仅本机可访问
+# ─────────────── 监听地址 ───────────────
 server:
-  host: "0.0.0.0"
+  host: "0.0.0.0"          # 0.0.0.0=监听所有网卡(允许外部访问)；127.0.0.1=仅本机可访问
   port: 9527
 
-# Webhook 签名验证密钥（预留字段，暂未启用）
+# ─────────────── Webhook ───────────────
 webhook:
-  secret: ""
+  secret: ""               # GitHub/Gitee webhook 签名校验密钥（预留字段，暂未启用）
 
-# SMTP 邮件通知配置（Resend 方式时不需要）
+# ─────────────── 邮件通知 ───────────────
+# SMTP 与 Resend 二选一；都不配置则不发送通知
 smtp:
   host: "smtp.qq.com"
   port: 465
   username: "your-email@qq.com"
-  token: "your-smtp-authorization-code"
-  tls: true
-
-# Resend API 配置（替代 SMTP，发送邮件通过 Resend HTTP API）
-# 获取 API Key: https://resend.com/api-keys
-# 配置发件域名: https://resend.com/domains
+  token: "your-smtp-authorization-code"   # SMTP 授权码，非登录密码
+  tls: true                               # STARTTLS 或 SSL 加密
 resend:
-  api_key: "re_xxxxxxxxxxxxxxxxxxxxx"
+  api_key: "re_xxxxxxxxxxxxxxxxxxxxx"     # 获取：https://resend.com/api-keys
   from: "deployd <onboarding@your-domain.com>"
-
-# 部署通知收件人
 notifications:
-  to:
+  to:                      # 额外通知收件人（代码提交作者始终作为默认收件人）
     - "admin@example.com"
 
-# 服务列表
+# ─────────────── 服务列表 ───────────────
 services:
+  # ── jvm：Spring Boot 等 java -jar 服务 ──
   - name: "my-springboot-app"
-    type: "springboot"
+    type: "jvm"                      # 部署模型；也接受兼容别名 springboot
     repo:
-      # Git 仓库地址（HTTPS 格式，deployd 会自动转为 SSH）
-      url: "https://github.com/user/repo.git"
-      # SSH 私钥路径（可选，留空则使用 ~/.ssh/id_ed25519）
-      # 首次启动 deployd 会自动在 ~/.ssh/ 生成密钥并提示配置公钥
-      branch: "main"
-    # 代码克隆和工作目录
-    workspace: "/opt/deployd/apps/my-springboot-app"
-    # 构建命令
+      url: "https://github.com/user/repo.git"   # Git 仓库地址（HTTPS 会自动转 SSH）
+      branch: "main"                            # 部署分支
+    workspace: "/opt/deployd/apps/my-springboot-app"   # 代码克隆与工作目录
     build:
-      command: "mvn package -DskipTests"
-    # 启动命令
-    run:
-      command: "/opt/deployd/apps/my-springboot-app/start.sh"
+      command: "mvn package -DskipTests"        # 通用：构建命令(shell)，支持 && 或列表形式
+      # command: ["npm ci", "npm run build"]    #   列表形式：依次执行
+    deploy:                         # jvm 策略层（结构由 type=jvm 决定）
+      # artifact: "target/*.jar"   # 可选：产物 glob。不填=原地启动(run 里写 target/xxx.jar 相对路径)
+      # dest: "/opt/app"           # 可选：产物归位目录。填了才拷贝(替代旧 moveJarToRoot 行为)
+      run: "java -jar target/app.jar"           # 纯启动命令，不要写 nohup/&（后台化由工具负责）
+      # env:                        # 可选：运行时环境变量
+      #   JAVA_OPTS: "-Xms100m -Xmx128m"
+
+  # ── static：Vue/React 等静态站点（无独立进程，nginx 托管）──
+  # - name: "web-vue"
+  #   type: "static"
+  #   repo:
+  #     url: "https://github.com/user/vue-app.git"
+  #     branch: "main"
+  #   workspace: "/opt/web-vue"
+  #   build:
+  #     command: "npm run build"
+  #   deploy:
+  #     artifact: "dist/*"                       # 构建产物（glob）
+  #     dest: "/usr/share/nginx/html/vue"        # 拷贝到 nginx 目录
+  #     nginx_reload: true                       # 部署后执行 nginx -s reload
+  #     health: "https://app.example.com/health" # status 通过健康检查 URL 判定(HTTP 2xx/3xx=running)
+
+  # ── node：Next.js SSR / Express 等长驻 Node 服务 ──
+  # - name: "web-ssr"
+  #   type: "node"
+  #   repo: { url: "...", branch: "main" }
+  #   workspace: "/opt/web-ssr"
+  #   build: { command: "npm run build" }
+  #   deploy:
+  #     run: "node server.js"
+  #     env: { NODE_ENV: "production" }
+
+  # ── python：FastAPI/Flask 等 ASGI/WSGI 服务 ──
+  # - name: "api"
+  #   type: "python"
+  #   repo: { url: "...", branch: "main" }
+  #   workspace: "/opt/api"
+  #   build:
+  #     command:
+  #       - "python3.11 -m venv .venv"            # 创建虚拟环境
+  #       - ".venv/bin/pip install ."             # 装依赖（pyproject.toml）
+  #   deploy:
+  #     venv: ".venv"                             # 虚拟环境目录
+  #     migrate: ".venv/bin/alembic upgrade head" # 可选：迁移(部署专属,不随重启执行)
+  #     run: ".venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"
+
+  # ── docker：容器化服务 ──
+  # - name: "svc-docker"
+  #   type: "docker"
+  #   repo: { url: "...", branch: "main" }
+  #   workspace: "/opt/svc"
+  #   build: { command: "docker build -t app:latest ." }
+  #   deploy:
+  #     image: "app:latest"                       # 镜像
+  #     container: "app"                          # 容器名
+  #     ports: ["8000:8000"]                      # 端口映射
