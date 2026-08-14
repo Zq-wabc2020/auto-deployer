@@ -103,6 +103,25 @@ services:
 	}
 }
 
+func TestLoadExampleConfig(t *testing.T) {
+	// The repo's config.yaml.example must parse and validate against the new
+	// two-tier schema (catches drift between the template and the parser).
+	path := filepath.Join("..", "..", "config.yaml.example")
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("config.yaml.example not found at", path)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config.yaml.example: %v", err)
+	}
+	if errs := Validate(cfg); len(errs) != 0 {
+		t.Fatalf("config.yaml.example failed validation: %v", errs)
+	}
+	if len(cfg.Services) == 0 {
+		t.Fatal("expected at least one service in config.yaml.example")
+	}
+}
+
 func TestLoadFromFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
