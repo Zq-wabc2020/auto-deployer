@@ -43,23 +43,11 @@ func TestExecuteBuild_EmptyCommand(t *testing.T) {
 	}
 }
 
-func TestSplitCommand_Simple(t *testing.T) {
-	result := SplitCommand("mvn package -DskipTests")
-	expected := []string{"mvn", "package", "-DskipTests"}
-	if len(result) != len(expected) {
-		t.Fatalf("expected %v, got %v", expected, result)
-	}
-	for i, v := range expected {
-		if result[i] != v {
-			t.Errorf("expected[%d]=%q, got %q", i, v, result[i])
-		}
-	}
-}
-
-func TestSplitCommand_Quoted(t *testing.T) {
-	result := SplitCommand(`echo "hello world"`)
-	expected := []string{"echo", "hello world"}
-	if len(result) != len(expected) {
-		t.Fatalf("expected %v, got %v", expected, result)
+func TestExecuteBuild_ShellSemantics(t *testing.T) {
+	// sh -c must support && and redirection (the reason for the switch from
+	// the old no-shell SplitCommand execution).
+	err := ExecuteBuild("/tmp", "true && echo ok > /dev/null", io.Discard)
+	if err != nil {
+		t.Fatalf("expected shell semantics to work, got: %v", err)
 	}
 }

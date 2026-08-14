@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -16,7 +17,7 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/registry"
 )
 
-// Plugin implements the Deployer interface for Spring Boot applications.
+// Plugin implements the Deployer interface for Spring Boot / JVM applications.
 type Plugin struct {
 	output io.Writer
 }
@@ -41,40 +42,64 @@ func (p *Plugin) SetOutput(w io.Writer) {
 	p.output = w
 }
 
-// Build executes the configured build command.
-// Git fetch is handled by the orchestrator before calling this method.
+// jvmDeployConfig is the strategy-layer config parsed from svc.Deploy.
+type jvmDeployConfig struct {
+	Artifact string            `yaml:"artifact"` // 产物 glob，如 target/*.jar；不填=原地启动
+	Dest     string            `yaml:"dest"`     // 归位目录；不填=workspace 根
+	Run      string            `yaml:"run"`      // 纯启动命令，不含 nohup/&
+	Env      map[string]string `yaml:"env"`      // 运行时环境变量
+}
+
+// deployConfig parses the service's deploy node into jvm-specific config.
+func (p *Plugin) deployConfig(svc *config.ServiceConfig) jvmDeployConfig {
+	var dc jvmDeployConfig
+	if svc.Deploy != nil {
+		_ = svc.Deploy.Decode(&dc)
+	}
+	return dc
+}
+
+// Build executes the configured build command (shell). Artifact placement and
+// workspace cleanup are Stage's job, not Build's.
 func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if svc.Build.Command.Empty() {
 		return fmt.Errorf("build command is empty")
 	}
-
 	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command.String(), p.output); err != nil {
 		return err
 	}
+	fmt.Fprintln(p.output, "[springboot] build completed")
+	return nil
+}
 
-	// Move built jar to workspace root
-	if err := moveJarToRoot(svc.Workspace, p.output); err != nil {
-		fmt.Fprintf(p.output, "[springboot] warning: failed to move jar: %v\n", err)
+// Stage is deploy-only preparation (skipped on restart): copy the built artifact
+// to its deploy directory (if configured) and clean the workspace. With no
+// artifact configured, Stage is a no-op (in-place launch).
+func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
+	dc := p.deployConfig(svc)
+	if dc.Artifact == "" {
+		// In-place launch: no placement, no cleanup.
+		return nil
 	}
-
-	// Clean up everything except jar file (source code removed after build)
+	dest := dc.Dest
+	if dest == "" {
+		dest = svc.Workspace // default: workspace root (preserves old moveJarToRoot behavior)
+	}
+	if err := copyArtifact(svc.Workspace, dc.Artifact, dest, p.output); err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
 	if err := cleanWorkspace(svc.Workspace); err != nil {
 		fmt.Fprintf(p.output, "[springboot] warning: failed to clean workspace: %v\n", err)
 	} else {
 		fmt.Fprintf(p.output, "[springboot] cleaned workspace (source code removed)\n")
 	}
-
-	fmt.Fprintln(p.output, "[springboot] build completed")
+	fmt.Fprintf(p.output, "[springboot] staged artifact to %s\n", dest)
 	return nil
 }
 
-// Stage is deploy-only preparation (artifact placement, etc.). Step 2: no-op --
-// Build still performs moveJarToRoot. Step 3 moves placement here.
-func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
-	return nil
-}
-
-// Start launches the configured run command and records its PID.
+// Start launches the run command (pure launch, no placement) via `sh -c` in a
+// detached process group and records its PID. The run command must NOT include
+// nohup/& -- backgrounding is the tool's job (process.Manager / Setpgid).
 func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	pidFile := filepath.Join(daemonDir(), svc.Name+".pid")
 	mgr := process.NewManager(pidFile)
@@ -83,46 +108,47 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 		return fmt.Errorf("service %s is already running", svc.Name)
 	}
 
-	parts := build.SplitCommand(svc.Run.Command)
-	if len(parts) == 0 {
-		return fmt.Errorf("run command is empty")
+	dc := p.deployConfig(svc)
+	if dc.Run == "" {
+		return fmt.Errorf("run command is empty (configure deploy.run)")
 	}
 
-	// Set workspace as working directory
-	cmd := exec.Command(parts[0], parts[1:]...)
-	cmd.Dir = svc.Workspace
-	// Option A: app runtime stdout/stderr is discarded; the service log holds
-	// deploy pipeline logs only. The app must log to its own file (e.g. logback).
+	// Run from the deploy directory when the artifact was placed there, else
+	// from the workspace (in-place launch).
+	runDir := svc.Workspace
+	if dc.Artifact != "" && dc.Dest != "" {
+		runDir = dc.Dest
+	}
+
+	cmd := exec.Command("sh", "-c", dc.Run)
+	cmd.Dir = runDir
+	// Option A: app runtime stdout/stderr discarded; the service log holds deploy
+	// pipeline logs only. The app must log to its own file (e.g. logback).
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// Auto-detect Java version from .java-version file
+	env := os.Environ()
 	if javaVersion := detectJavaVersion(svc.Workspace); javaVersion != "" {
 		if javaHome := findJavaHome(javaVersion); javaHome != "" {
-			// Replace java command with full path to Java 21
-			javaBin := filepath.Join(javaHome, "bin", "java")
-			parts[0] = javaBin
-			cmd = exec.Command(javaBin, parts[1:]...)
-			cmd.Dir = svc.Workspace
-			cmd.Stdout = nil
-			cmd.Stderr = nil
-			// Inherit current environment and add JAVA_HOME and PATH
-			cmd.Env = append(os.Environ(),
+			env = append(env,
 				"JAVA_HOME="+javaHome,
 				"PATH="+javaHome+string(os.PathListSeparator)+os.Getenv("PATH"),
 			)
 		}
 	}
+	for k, v := range dc.Env {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
-
 	if err := mgr.WritePID(cmd.Process.Pid); err != nil {
 		return err
 	}
-
-	fmt.Fprintf(p.output, "started %s with pid %d\n", parts[0], cmd.Process.Pid)
+	fmt.Fprintf(p.output, "started %s with pid %d\n", svc.Name, cmd.Process.Pid)
 	return nil
 }
 
@@ -159,36 +185,43 @@ func detectJavaVersion(workspace string) string {
 // findJavaHome finds the JDK home for a given version.
 // Tries jenv first, then system Java locations.
 func findJavaHome(version string) string {
-	// Try jenv
 	if jenvPath, err := exec.Command("jenv", "prefix", version).Output(); err == nil {
 		return strings.TrimSpace(string(jenvPath))
 	}
-	// Try system java_home
 	if out, err := exec.Command("/usr/libexec/java_home", "-v", version).Output(); err == nil {
 		return strings.TrimSpace(string(out))
 	}
 	return ""
 }
 
-// moveJarToRoot finds the built jar in workspace/target/ and copies it to workspace root.
-func moveJarToRoot(workspace string, out io.Writer) error {
-	targetDir := filepath.Join(workspace, "target")
-	entries, err := os.ReadDir(targetDir)
+// copyArtifact copies files matching pattern (glob, relative to workspace) to dest.
+func copyArtifact(workspace, pattern, dest string, out io.Writer) error {
+	matches, err := filepath.Glob(filepath.Join(workspace, pattern))
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".jar") && !strings.HasSuffix(entry.Name(), "original.jar") {
-			src := filepath.Join(targetDir, entry.Name())
-			dst := filepath.Join(workspace, entry.Name())
-			if err := copyFile(src, dst); err != nil {
-				return fmt.Errorf("failed to copy jar %s: %w", entry.Name(), err)
-			}
-			fmt.Fprintf(out, "[springboot] copied %s to %s\n", entry.Name(), workspace)
-			return nil
-		}
+	if len(matches) == 0 {
+		return fmt.Errorf("no artifact matching %s", pattern)
 	}
-	return fmt.Errorf("no jar found in %s/target", workspace)
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		return err
+	}
+	copied := 0
+	for _, src := range matches {
+		if strings.HasSuffix(src, ".original.jar") {
+			continue
+		}
+		dst := filepath.Join(dest, filepath.Base(src))
+		if err := copyFile(src, dst); err != nil {
+			return fmt.Errorf("failed to copy %s: %w", filepath.Base(src), err)
+		}
+		fmt.Fprintf(out, "[springboot] copied %s to %s\n", filepath.Base(src), dest)
+		copied++
+	}
+	if copied == 0 {
+		return fmt.Errorf("no artifact copied from %s", pattern)
+	}
+	return nil
 }
 
 func copyFile(src, dst string) error {
@@ -206,22 +239,19 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// cleanWorkspace removes all files except jar files.
+// cleanWorkspace removes all files except jar files and .java-version.
 func cleanWorkspace(workspace string) error {
 	entries, err := os.ReadDir(workspace)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		// Skip jar files (build artifacts to keep)
 		if strings.HasSuffix(entry.Name(), ".jar") {
 			continue
 		}
-		// Skip .java-version file (needed for Java version detection)
 		if entry.Name() == ".java-version" {
 			continue
 		}
-		// Remove everything else (source code, .git, target, etc.)
 		path := filepath.Join(workspace, entry.Name())
 		if entry.IsDir() {
 			if err := os.RemoveAll(path); err != nil {

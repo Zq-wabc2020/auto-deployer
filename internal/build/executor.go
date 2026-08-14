@@ -9,20 +9,15 @@ import (
 	"strings"
 )
 
-// ExecuteBuild runs the given shell command in the specified workspace directory.
-// It automatically sets JAVA_HOME if a .java-version file exists in the workspace.
-// out receives the command output (typically a service log file).
+// ExecuteBuild runs the given command in the workspace directory via `sh -c`,
+// so shell semantics (&&, |, >, $VAR, etc.) work. It sets JAVA_HOME if a
+// .java-version file exists in the workspace. out receives the command output.
 func ExecuteBuild(workspace, command string, out io.Writer) error {
 	if command == "" {
 		return fmt.Errorf("build command is empty")
 	}
 
-	parts := SplitCommand(command)
-	if len(parts) == 0 {
-		return fmt.Errorf("failed to parse build command: %q", command)
-	}
-
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = workspace
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -65,41 +60,4 @@ func findJavaHome(version string) string {
 		return strings.TrimSpace(string(out))
 	}
 	return ""
-}
-
-// SplitCommand splits a shell command string into arguments for exec.Command.
-// It handles quoted strings (single and double quotes).
-func SplitCommand(command string) []string {
-	var result []string
-	current := ""
-	inQuote := false
-	quoteChar := byte(0)
-
-	for i := 0; i < len(command); i++ {
-		ch := command[i]
-		if inQuote {
-			if ch == quoteChar {
-				inQuote = false
-			} else {
-				current += string(ch)
-			}
-			continue
-		}
-		switch ch {
-		case '"', '\'':
-			inQuote = true
-			quoteChar = ch
-		case ' ', '\t':
-			if current != "" {
-				result = append(result, current)
-				current = ""
-			}
-		default:
-			current += string(ch)
-		}
-	}
-	if current != "" {
-		result = append(result, current)
-	}
-	return result
 }
