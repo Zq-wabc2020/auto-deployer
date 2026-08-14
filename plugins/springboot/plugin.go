@@ -252,6 +252,11 @@ func cleanWorkspace(workspace string) error {
 		if entry.Name() == ".java-version" {
 			continue
 		}
+		// Keep .git so the next deploy's Fetch can take the fast path
+		// (fetch + reset --hard) instead of a full clean re-clone.
+		if entry.Name() == ".git" {
+			continue
+		}
 		path := filepath.Join(workspace, entry.Name())
 		if entry.IsDir() {
 			if err := os.RemoveAll(path); err != nil {
