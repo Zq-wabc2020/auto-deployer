@@ -69,7 +69,6 @@ func TestStart_NoCommand(t *testing.T) {
 	svc := &config.ServiceConfig{
 		Name:      "test-app",
 		Workspace: t.TempDir(),
-		Run:       config.RunConfig{Command: ""},
 	}
 	err := p.Start(context.Background(), svc)
 	if err == nil {

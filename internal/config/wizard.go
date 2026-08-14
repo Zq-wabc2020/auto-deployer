@@ -8,12 +8,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 // RunWizard runs an interactive wizard that prompts the user for configuration
-// values and writes a YAML config file at configPath.
+// values and writes a YAML config file (new two-tier format) at configPath.
 func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 	scanner := bufio.NewScanner(r)
 	writer := bufio.NewWriter(w)
@@ -41,23 +39,25 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 	if port == 0 {
 		port = 9527
 	}
-
 	host := ask("Listen host", "0.0.0.0")
 
 	name := ask("Service name", "")
-	svcType := ask("Service type (springboot)", "springboot")
+	svcType := ask("Service type (jvm/static/node/python/docker)", "jvm")
 	repoURL := ask("Git repository URL", "")
 	branch := ask("Deploy branch", "main")
 	workspace := ask("Workspace directory", "")
-	buildCmd := ask("Build command", "mvn package -DskipTests")
-	runCmd := ask("Run command", "")
+	buildCmd := ask("Build command", defaultBuildCommand(svcType, name))
+
+	runCmd := ""
+	if svcType == "jvm" || svcType == "springboot" {
+		runCmd = ask("Run command (pure launch, no nohup/&)", "java -jar target/"+name+".jar")
+	}
 
 	smtpHost := ask("SMTP host (optional, e.g. smtp.qq.com)", "")
-	smtpPortStr := ask("SMTP port", "")
+	smtpPortStr := ask("SMTP port", "465")
 	smtpPort, _ := strconv.Atoi(smtpPortStr)
 	if smtpPort == 0 {
-		smtpPortStr = "465"
-		smtpPort, _ = strconv.Atoi(smtpPortStr)
+		smtpPort = 465
 	}
 	smtpUser := ask("SMTP username", "")
 	smtpToken := ask("SMTP token (authorization code)", "")
@@ -75,33 +75,76 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 		}
 	}
 
-	cfg := &AppConfig{
-		Server: ServerConfig{Host: host, Port: port},
-		SMTP:   SMTPConfig{Host: smtpHost, Port: smtpPort, Username: smtpUser, Token: smtpToken, TLS: smtpTLSBool},
-		Notifications: NotificationConfig{To: notificationTo},
-		Services: []ServiceConfig{{
-			Name:      name,
-			Type:      svcType,
-			Repo:      RepoConfig{URL: repoURL, Branch: branch},
-			Workspace: workspace,
-			Build:     BuildConfig{Command: Command{buildCmd}},
-			Run:       RunConfig{Command: runCmd},
-		}},
+	// Build YAML (new two-tier format) directly for full control of ordering
+	// and comments.
+	var b strings.Builder
+	fmt.Fprintf(&b, "# deployd 全局配置\n\n")
+	fmt.Fprintf(&b, "server:\n  host: %q\n  port: %d\n\n", host, port)
+	fmt.Fprintf(&b, "webhook:\n  secret: \"\"\n\n")
+	fmt.Fprintf(&b, "smtp:\n  host: %q\n  port: %d\n  username: %q\n  token: %q\n  tls: %v\n\n",
+		smtpHost, smtpPort, smtpUser, smtpToken, smtpTLSBool)
+	fmt.Fprintf(&b, "resend:\n  api_key: \"\"\n  from: \"\"\n\n")
+	fmt.Fprintf(&b, "notifications:\n")
+	if len(notificationTo) == 0 {
+		fmt.Fprintf(&b, "  to: []\n\n")
+	} else {
+		fmt.Fprintf(&b, "  to:\n")
+		for _, addr := range notificationTo {
+			fmt.Fprintf(&b, "    - %q\n", addr)
+		}
+		fmt.Fprintf(&b, "\n")
 	}
-
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
+	fmt.Fprintf(&b, "services:\n")
+	fmt.Fprintf(&b, "  - name: %q\n", name)
+	fmt.Fprintf(&b, "    type: %q\n", svcType)
+	fmt.Fprintf(&b, "    repo:\n      url: %q\n      branch: %q\n", repoURL, branch)
+	fmt.Fprintf(&b, "    workspace: %q\n", workspace)
+	fmt.Fprintf(&b, "    build:\n      command: %q\n", buildCmd)
+	writeDeployBlock(&b, svcType, name, runCmd)
 
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(b.String()), 0644); err != nil {
 		return err
 	}
 
 	fmt.Fprintf(writer, "\nConfiguration saved to %s\n", configPath)
 	writer.Flush()
 	return nil
+}
+
+// defaultBuildCommand returns a sensible build command default for a type.
+func defaultBuildCommand(svcType, name string) string {
+	switch svcType {
+	case "jvm", "springboot":
+		return "mvn package -DskipTests"
+	case "static", "node":
+		return "npm run build"
+	case "python":
+		return "pip install -r requirements.txt"
+	case "docker":
+		return "docker build -t " + name + ":latest ."
+	}
+	return ""
+}
+
+// writeDeployBlock emits the type-specific deploy: section. jvm uses the
+// run command asked earlier; others emit a template for the user to fill in
+// as their plugin lands.
+func writeDeployBlock(b *strings.Builder, svcType, name, runCmd string) {
+	switch svcType {
+	case "jvm", "springboot":
+		fmt.Fprintf(b, "    deploy:\n      run: %q\n", runCmd)
+	case "static":
+		fmt.Fprintf(b, "    deploy:\n      artifact: \"dist/*\"\n      dest: \"/usr/share/nginx/html/%s\"\n      nginx_reload: true\n      # health: \"https://example.com/health\"\n", name)
+	case "node":
+		fmt.Fprintf(b, "    deploy:\n      run: \"node server.js\"\n      env:\n        NODE_ENV: \"production\"\n")
+	case "python":
+		fmt.Fprintf(b, "    deploy:\n      venv: \".venv\"\n      run: \"uvicorn main:app --host 0.0.0.0 --port 8000\"\n      # migrate: \".venv/bin/alembic upgrade head\"\n")
+	case "docker":
+		fmt.Fprintf(b, "    deploy:\n      image: \"%s:latest\"\n      container: \"%s\"\n      ports: [\"8000:8000\"]\n", name, name)
+	default:
+		fmt.Fprintf(b, "    # deploy:\n    #   run: \"...\"\n")
+	}
 }

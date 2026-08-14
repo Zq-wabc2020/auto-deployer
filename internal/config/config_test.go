@@ -68,12 +68,10 @@ services:
 	if svc.Build.Command.String() != "mvn package -DskipTests" {
 		t.Errorf("expected build command 'mvn package -DskipTests', got '%s'", svc.Build.Command.String())
 	}
-	if svc.Run.Command != "java -jar test-service.jar" {
-		t.Errorf("expected run command 'java -jar test-service.jar', got '%s'", svc.Run.Command)
-	}
 }
 
 func TestParseMultiLineCommand(t *testing.T) {
+	// build.command accepts a multi-line scalar; Command preserves it verbatim.
 	yamlContent := []byte(`
 server:
   host: "localhost"
@@ -81,16 +79,12 @@ server:
 
 services:
   - name: "multiline-test"
-    type: "custom"
+    type: "jvm"
     workspace: "/tmp/test"
     build:
-      command: "echo step1 && echo step2"
-    run:
       command: |
-        #!/bin/bash
-        echo "Starting service..."
-        java -jar app.jar
-        echo "Service started"
+        echo "step one"
+        echo "step two"
 `)
 
 	var cfg AppConfig
@@ -102,14 +96,10 @@ services:
 		t.Fatalf("expected 1 service, got %d", len(cfg.Services))
 	}
 
-	runCmd := cfg.Services[0].Run.Command
-	newlineCount := strings.Count(runCmd, "\n")
-	if newlineCount < 2 {
-		t.Errorf("expected multi-line command with at least 2 newlines, got %d in:\n%s", newlineCount, runCmd)
-	}
-
-	if !strings.HasPrefix(runCmd, "#!/bin/bas") {
-		t.Errorf("expected command to start with shebang, got: %q", runCmd)
+	buildCmd := cfg.Services[0].Build.Command.String()
+	newlineCount := strings.Count(buildCmd, "\n")
+	if newlineCount < 1 {
+		t.Errorf("expected multi-line command with newlines, got %d in:\n%s", newlineCount, buildCmd)
 	}
 }
 

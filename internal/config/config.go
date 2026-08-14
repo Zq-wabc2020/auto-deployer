@@ -86,19 +86,12 @@ type BuildConfig struct {
 	Command Command `yaml:"command"`
 }
 
-// RunConfig retained temporarily for incremental migration; new configs use
-// deploy.run (parsed by the plugin). Removed once the plugin switches.
-type RunConfig struct {
-	Command string `yaml:"command"`
-}
-
 type ServiceConfig struct {
 	Name      string      `yaml:"name"`
 	Type      string      `yaml:"type"`
 	Repo      RepoConfig  `yaml:"repo"`
 	Workspace string      `yaml:"workspace"`
 	Build     BuildConfig `yaml:"build"`
-	Run       RunConfig   `yaml:"run"`    // 保留以兼容渐进迁移；新配置改用 deploy.run
 	Deploy    *yaml.Node  `yaml:"deploy"` // 策略层原始节点，由对应类型插件自解析
 }
 
@@ -120,7 +113,24 @@ func Load(path string) (*AppConfig, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
+	warnLegacyRunField(data)
 	return &cfg, nil
+}
+
+// warnLegacyRunField prints a migration hint if any service still uses the
+// removed top-level `run` field (now deploy.run). Warning only, non-fatal.
+func warnLegacyRunField(data []byte) {
+	var raw struct {
+		Services []map[string]yaml.Node `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return
+	}
+	for i, svc := range raw.Services {
+		if _, ok := svc["run"]; ok {
+			fmt.Fprintf(os.Stderr, "[config] 警告: services[%d] 使用了已移除的顶层字段 `run`，请迁移到 `deploy.run`（见设计文档 §9.2）\n", i)
+		}
+	}
 }
 
 // DefaultConfig finds the default config file by priority:
