@@ -11,7 +11,9 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/deploy"
 	"github.com/auto-deployer/auto-deployer/internal/process"
+	"github.com/auto-deployer/auto-deployer/internal/registry"
 )
 
 // Plugin implements the Deployer interface for Spring Boot applications.
@@ -22,6 +24,11 @@ type Plugin struct {
 // New creates a new Spring Boot plugin instance.
 func New() *Plugin {
 	return &Plugin{output: os.Stdout}
+}
+
+func init() {
+	registry.Register("jvm", func() deploy.Deployer { return New() })
+	registry.Register("springboot", func() deploy.Deployer { return New() })
 }
 
 // Type returns the plugin identifier.
@@ -58,6 +65,12 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	}
 
 	fmt.Fprintln(p.output, "[springboot] build completed")
+	return nil
+}
+
+// Stage is deploy-only preparation (artifact placement, etc.). Step 2: no-op --
+// Build still performs moveJarToRoot. Step 3 moves placement here.
+func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	return nil
 }
 

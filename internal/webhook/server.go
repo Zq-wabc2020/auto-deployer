@@ -13,7 +13,7 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploy"
 	"github.com/auto-deployer/auto-deployer/internal/deployqueue"
-	"github.com/auto-deployer/auto-deployer/plugins/springboot"
+	"github.com/auto-deployer/auto-deployer/internal/registry"
 )
 
 // GitHubPushPayload represents a GitHub push webhook event.
@@ -52,14 +52,6 @@ type GitSignature struct {
 type GitHubCommit struct {
 	Author    GitSignature `json:"author"`
 	Committer GitSignature `json:"committer"`
-}
-
-// Deployer handles the build and deploy logic for a service.
-type Deployer interface {
-	Build(ctx context.Context, svc *config.ServiceConfig) error
-	Start(ctx context.Context, svc *config.ServiceConfig) error
-	Stop(ctx context.Context, svc *config.ServiceConfig) error
-	Status(ctx context.Context, svc *config.ServiceConfig) (string, error)
 }
 
 // Handle is the HTTP handler for webhook events from both GitHub and Gitee.
@@ -107,10 +99,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 
 	// Validate service type up front so a misconfigured service doesn't keep
 	// queuing undeployable tasks.
-	switch matched.Type {
-	case "springboot":
-		// ok
-	default:
+	if _, err := registry.Get(matched.Type); err != nil {
 		fmt.Printf("[webhook] unknown service type: %s\n", matched.Type)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -268,12 +257,9 @@ func ExecuteDeploy(ctx context.Context, task deployqueue.Task, operatorEmails []
 	if svc == nil {
 		return fmt.Errorf("service %s not found in config", task.ServiceName)
 	}
-	var deployer deploy.Deployer
-	switch svc.Type {
-	case "springboot":
-		deployer = springboot.New()
-	default:
-		return fmt.Errorf("unknown service type: %s", svc.Type)
+	deployer, err := registry.Get(svc.Type)
+	if err != nil {
+		return err
 	}
 	_, err = deploy.Deploy(ctx, svc, cfg, deployer, operatorEmails)
 	return err

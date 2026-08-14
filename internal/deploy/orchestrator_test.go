@@ -10,6 +10,7 @@ import (
 
 type mockDeployer struct {
 	built    bool
+	staged   bool
 	started  bool
 	stopped  bool
 	status   string
@@ -20,6 +21,11 @@ type mockDeployer struct {
 func (m *mockDeployer) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	m.built = true
 	return m.buildErr
+}
+
+func (m *mockDeployer) Stage(ctx context.Context, svc *config.ServiceConfig) error {
+	m.staged = true
+	return nil
 }
 func (m *mockDeployer) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	m.started = true

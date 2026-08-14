@@ -12,14 +12,29 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/notify"
 )
 
-// Deployer handles the build and deploy logic for a service type.
+// Deployer is the universal lifecycle contract every deployment model implements.
+// Build produces the artifact; Stage is deploy-only preparation (artifact placement,
+// migrate, etc.) that must NOT run on restart; Status reports current state.
+// Start/Stop are optional capabilities (see Startable/Stoppable) for models that
+// manage a long-running process.
 type Deployer interface {
 	Build(ctx context.Context, svc *config.ServiceConfig) error
-	Start(ctx context.Context, svc *config.ServiceConfig) error
-	Stop(ctx context.Context, svc *config.ServiceConfig) error
+	Stage(ctx context.Context, svc *config.ServiceConfig) error
 	Status(ctx context.Context, svc *config.ServiceConfig) (string, error)
 	// SetOutput redirects stdout/stderr to the given writer (typically a service log file)
 	SetOutput(w io.Writer)
+}
+
+// Startable is implemented by models that launch a long-running process
+// (jvm/node/python/docker). Models without a per-service process (e.g. static)
+// do not implement this; `service start` then returns a clear error.
+type Startable interface {
+	Start(ctx context.Context, svc *config.ServiceConfig) error
+}
+
+// Stoppable is implemented by models that can stop a managed process.
+type Stoppable interface {
+	Stop(ctx context.Context, svc *config.ServiceConfig) error
 }
 
 // DeployResult contains the result of a deployment operation.
@@ -31,7 +46,7 @@ type DeployResult struct {
 }
 
 // Deploy executes the full deployment pipeline:
-// fetch → getAuthorEmail → plugin.Build → plugin.Stop → plugin.Start → notify
+// fetch -> getAuthorEmail -> plugin.Build -> plugin.Stage -> plugin.Stop? -> plugin.Start? -> notify
 func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfig, deployer Deployer, operatorEmails []string) (*DeployResult, error) {
 	result := &DeployResult{ServiceName: svc.Name}
 
@@ -82,18 +97,33 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		return result, err
 	}
 
-	// 4. Stop old instance
-	log.Printf("stopping %s...", svc.Name)
-	_ = deployer.Stop(ctx, svc)
-
-	// 5. Start new instance
-	log.Printf("starting %s...", svc.Name)
-	if err := deployer.Start(ctx, svc); err != nil {
+	// 4. Stage (deploy-only preparation: artifact placement, migrate, etc.).
+	// Skipped on restart -- this is what keeps Start a pure launch.
+	log.Printf("staging %s...", svc.Name)
+	if err := deployer.Stage(ctx, svc); err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
-		log.Printf("start failed: %v", err)
+		log.Printf("stage failed: %v", err)
 		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "failed", err.Error())
 		return result, err
+	}
+
+	// 5. Stop old instance (only if the model manages a process)
+	if s, ok := deployer.(Stoppable); ok {
+		log.Printf("stopping %s...", svc.Name)
+		_ = s.Stop(ctx, svc)
+	}
+
+	// 6. Start new instance (only if the model runs a process)
+	if s, ok := deployer.(Startable); ok {
+		log.Printf("starting %s...", svc.Name)
+		if err := s.Start(ctx, svc); err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+			log.Printf("start failed: %v", err)
+			sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "failed", err.Error())
+			return result, err
+		}
 	}
 
 	result.Status = "success"
@@ -105,18 +135,29 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 
 // ServiceStart starts a service without rebuilding.
 func ServiceStart(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) error {
-	return deployer.Start(ctx, svc)
+	if s, ok := deployer.(Startable); ok {
+		return s.Start(ctx, svc)
+	}
+	return fmt.Errorf("%s 服务类型不支持 start，请用 deploy 重新发布", svc.Type)
 }
 
 // ServiceStop stops a service.
 func ServiceStop(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) error {
-	return deployer.Stop(ctx, svc)
+	if s, ok := deployer.(Stoppable); ok {
+		return s.Stop(ctx, svc)
+	}
+	return fmt.Errorf("%s 服务类型不支持 stop，请用 deploy 重新发布", svc.Type)
 }
 
-// ServiceRestart stops and starts a service without rebuilding.
+// ServiceRestart stops and starts a service without rebuilding (no Build/Stage).
 func ServiceRestart(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) error {
-	_ = deployer.Stop(ctx, svc)
-	return deployer.Start(ctx, svc)
+	if _, ok := deployer.(Startable); !ok {
+		return fmt.Errorf("%s 服务类型不支持 restart，请用 deploy 重新发布", svc.Type)
+	}
+	if s, ok := deployer.(Stoppable); ok {
+		_ = s.Stop(ctx, svc)
+	}
+	return deployer.(Startable).Start(ctx, svc)
 }
 
 // GetServiceStatus returns the status of a service.

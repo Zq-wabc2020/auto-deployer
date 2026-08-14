@@ -14,7 +14,6 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/logger"
 	"github.com/auto-deployer/auto-deployer/internal/process"
 	"github.com/auto-deployer/auto-deployer/internal/webhook"
-	"github.com/auto-deployer/auto-deployer/plugins/springboot"
 )
 
 const defaultConfigName = "config.yaml"
@@ -66,10 +65,7 @@ func Start(configPath string) error {
 		}
 	}
 
-	// 6. Register Spring Boot plugin
-	springboot.New()
-
-	// 7. Ensure SSH key exists and print setup instructions if needed
+	// 6. Ensure SSH key exists and print setup instructions if needed
 	if privKeyPath, _, pubKey, err := build.EnsureSSHKey(); err != nil {
 		fmt.Fprintf(os.Stderr, "[daemon] warning: failed to check SSH key: %v\n", err)
 	} else {

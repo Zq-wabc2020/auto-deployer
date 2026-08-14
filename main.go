@@ -1,6 +1,9 @@
 package main
 
-import "github.com/auto-deployer/auto-deployer/cmd"
+import (
+	_ "github.com/auto-deployer/auto-deployer/plugins"
+	"github.com/auto-deployer/auto-deployer/cmd"
+)
 
 func main() {
 	cmd.Execute()

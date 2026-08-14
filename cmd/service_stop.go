@@ -6,7 +6,7 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploy"
-	"github.com/auto-deployer/auto-deployer/plugins/springboot"
+	"github.com/auto-deployer/auto-deployer/internal/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -47,12 +47,9 @@ var serviceStopCmd = &cobra.Command{
 			return fmt.Errorf("service %q not found in config", serviceName)
 		}
 
-		var d deploy.Deployer
-		switch svc.Type {
-		case "springboot":
-			d = springboot.New()
-		default:
-			return fmt.Errorf("unknown service type %q", svc.Type)
+		d, err := registry.Get(svc.Type)
+		if err != nil {
+			return err
 		}
 
 		return deploy.ServiceStop(context.Background(), svc, d)
