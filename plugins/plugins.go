@@ -4,5 +4,6 @@
 package plugins
 
 import (
+	_ "github.com/auto-deployer/auto-deployer/plugins/docker"
 	_ "github.com/auto-deployer/auto-deployer/plugins/springboot"
 )
