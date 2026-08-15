@@ -53,8 +53,10 @@ type jvmDeployConfig struct {
 // deployConfig parses the service's deploy node into jvm-specific config.
 func (p *Plugin) deployConfig(svc *config.ServiceConfig) jvmDeployConfig {
 	var dc jvmDeployConfig
-	if svc.Deploy != nil {
-		_ = svc.Deploy.Decode(&dc)
+	if svc.Deploy.Kind != 0 { // zero node = no deploy: block
+		if err := svc.Deploy.Decode(&dc); err != nil {
+			fmt.Fprintf(p.output, "[springboot] warning: failed to parse deploy config: %v\n", err)
+		}
 	}
 	return dc
 }
@@ -128,19 +130,22 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	env := os.Environ()
+	overrides := map[string]string{}
 	if javaVersion := detectJavaVersion(svc.Workspace); javaVersion != "" {
 		if javaHome := findJavaHome(javaVersion); javaHome != "" {
-			env = append(env,
-				"JAVA_HOME="+javaHome,
-				"PATH="+javaHome+string(os.PathListSeparator)+os.Getenv("PATH"),
-			)
+			overrides["JAVA_HOME"] = javaHome
+			// NOTE: prepend javaHome/BIN (the JDK home itself is not on the
+			// executable path) so `java` resolves to the requested version
+			// instead of whatever a jenv shim or system default picks.
+			overrides["PATH"] = filepath.Join(javaHome, "bin") + string(os.PathListSeparator) + os.Getenv("PATH")
 		}
 	}
 	for k, v := range dc.Env {
-		env = append(env, k+"="+v)
+		overrides[k] = v
 	}
-	cmd.Env = env
+	if len(overrides) > 0 {
+		cmd.Env = build.MergeEnv(os.Environ(), overrides)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start process: %w", err)

@@ -9,6 +9,27 @@ import (
 	"strings"
 )
 
+// MergeEnv returns a copy of env with the given key=value overrides applied.
+// Existing entries for overridden keys are REPLACED (appending duplicates would
+// leave the original first-match entry effective in most shells).
+func MergeEnv(env []string, overrides map[string]string) []string {
+	out := make([]string, 0, len(env)+len(overrides))
+	for _, kv := range env {
+		k := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			k = kv[:i]
+		}
+		if _, replaced := overrides[k]; replaced {
+			continue
+		}
+		out = append(out, kv)
+	}
+	for k, v := range overrides {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
 // ExecuteBuild runs the given command in the workspace directory via `sh -c`,
 // so shell semantics (&&, |, >, $VAR, etc.) work. It sets JAVA_HOME if a
 // .java-version file exists in the workspace. out receives the command output.
@@ -25,8 +46,10 @@ func ExecuteBuild(workspace, command string, out io.Writer) error {
 	// Auto-detect Java version from .java-version file
 	if javaVersion := detectJavaVersion(workspace); javaVersion != "" {
 		if javaHome := findJavaHome(javaVersion); javaHome != "" {
-			cmd.Env = append(os.Environ(), "JAVA_HOME="+javaHome)
-			cmd.Env = append(cmd.Env, "PATH="+javaHome+string(os.PathListSeparator)+os.Getenv("PATH"))
+			cmd.Env = MergeEnv(os.Environ(), map[string]string{
+				"JAVA_HOME": javaHome,
+				"PATH":      filepath.Join(javaHome, "bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
+			})
 		}
 	}
 

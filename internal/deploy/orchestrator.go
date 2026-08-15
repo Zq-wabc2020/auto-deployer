@@ -75,7 +75,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("fetch failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, "", commitInfo, "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, "", commitInfo, "fetch", "failed", err.Error())
 		return result, err
 	}
 
@@ -93,7 +93,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("build failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "build", "failed", err.Error())
 		return result, err
 	}
 
@@ -104,7 +104,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("stage failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "failed", err.Error())
+		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "stage", "failed", err.Error())
 		return result, err
 	}
 
@@ -121,14 +121,14 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 			result.Status = "failed"
 			result.Error = err.Error()
 			log.Printf("start failed: %v", err)
-			sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "failed", err.Error())
+			sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "start", "failed", err.Error())
 			return result, err
 		}
 	}
 
 	result.Status = "success"
 	result.AuthorEmail = authorEmail
-	sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "success", "")
+	sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "", "success", "")
 	log.Printf("%s deployed successfully", svc.Name)
 	return result, nil
 }
@@ -165,7 +165,7 @@ func GetServiceStatus(ctx context.Context, svc *config.ServiceConfig, deployer D
 	return deployer.Status(ctx, svc)
 }
 
-func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, log *logger.Logger, recipients []string, authorEmail, commitInfo, status, errMsg string) {
+func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, log *logger.Logger, recipients []string, authorEmail, commitInfo, stage, status, errMsg string) {
 	if notifier := buildNotifier(cfg, recipients); notifier != nil {
 		to := strings.Join(recipients, ", ")
 		if to == "" {
@@ -178,6 +178,7 @@ func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceC
 			CommitInfo:  commitInfo,
 			AuthorEmail: authorEmail,
 			Status:      status,
+			Stage:       stage,
 			ErrMsg:      errMsg,
 		}
 		if err := notifier.NotifyDeployResult(ctx, notice); err != nil {

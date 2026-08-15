@@ -103,6 +103,61 @@ services:
 	}
 }
 
+func TestDeployNodeDecoding(t *testing.T) {
+	yamlContent := []byte(`
+services:
+  - name: "hello1"
+    type: "jvm"
+    deploy:
+      run: "java -jar app.jar"
+      artifact: "target/*.jar"
+      dest: "/opt/dest"
+`)
+	var cfg AppConfig
+	if err := yaml.Unmarshal(yamlContent, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	svc := cfg.Services[0]
+	if svc.Deploy.Kind == 0 {
+		t.Fatal("Deploy node is zero -- deploy: block was not captured")
+	}
+	var dc struct {
+		Run      string `yaml:"run"`
+		Artifact string `yaml:"artifact"`
+		Dest     string `yaml:"dest"`
+	}
+	if err := svc.Deploy.Decode(&dc); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if dc.Run != "java -jar app.jar" {
+		t.Errorf("Run = %q, want java -jar app.jar", dc.Run)
+	}
+	if dc.Artifact != "target/*.jar" {
+		t.Errorf("Artifact = %q, want target/*.jar", dc.Artifact)
+	}
+	if dc.Dest != "/opt/dest" {
+		t.Errorf("Dest = %q, want /opt/dest", dc.Dest)
+	}
+}
+
+func TestDeployNodeAbsent(t *testing.T) {
+	// No deploy: block -> zero node, no panic on presence check.
+	yamlContent := []byte(`
+services:
+  - name: "hello1"
+    type: "jvm"
+    build:
+      command: "mvn package"
+`)
+	var cfg AppConfig
+	if err := yaml.Unmarshal(yamlContent, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Services[0].Deploy.Kind != 0 {
+		t.Errorf("expected zero Deploy node, got Kind=%d", cfg.Services[0].Deploy.Kind)
+	}
+}
+
 func TestLoadExampleConfig(t *testing.T) {
 	// The repo's config.yaml.example must parse and validate against the new
 	// two-tier schema (catches drift between the template and the parser).

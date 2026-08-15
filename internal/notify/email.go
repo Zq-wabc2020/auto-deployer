@@ -185,6 +185,7 @@ type DeployNotice struct {
 	CommitInfo  string // latest commit subject, e.g. "feat: add login"
 	AuthorEmail string // operator / commit author
 	Status      string // "success" | "failed" | "running"
+	Stage       string // failed stage: fetch | build | stage | start (failed only)
 	ErrMsg      string
 }
 
@@ -220,7 +221,11 @@ func (n *Notifier) buildBody(notice DeployNotice) string {
 		sb.WriteString(n.row("变更者", notice.AuthorEmail))
 	}
 	if notice.Status == "failed" {
-		sb.WriteString(n.row("失败阶段", "未知"))
+		stage := notice.Stage
+		if stage == "" {
+			stage = "未知"
+		}
+		sb.WriteString(n.row("失败阶段", stage))
 		sb.WriteString(n.row("错误信息", notice.ErrMsg))
 	}
 	sb.WriteString("</table>")

@@ -87,12 +87,16 @@ type BuildConfig struct {
 }
 
 type ServiceConfig struct {
-	Name      string      `yaml:"name"`
-	Type      string      `yaml:"type"`
-	Repo      RepoConfig  `yaml:"repo"`
-	Workspace string      `yaml:"workspace"`
+	Name      string     `yaml:"name"`
+	Type      string     `yaml:"type"`
+	Repo      RepoConfig `yaml:"repo"`
+	Workspace string     `yaml:"workspace"`
 	Build     BuildConfig `yaml:"build"`
-	Deploy    *yaml.Node  `yaml:"deploy"` // 策略层原始节点，由对应类型插件自解析
+	// Deploy is the raw strategy-layer node parsed by the type's plugin.
+	// NOTE: must be a value yaml.Node (a *yaml.Node field gets allocated but
+	// never filled by yaml.v3, silently dropping the deploy: block).
+	// Zero value (Kind==0) means "no deploy block configured".
+	Deploy yaml.Node `yaml:"deploy"`
 }
 
 type AppConfig struct {
