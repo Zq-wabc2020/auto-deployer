@@ -26,9 +26,10 @@ func init() {
 }
 
 var deployCmd = &cobra.Command{
-	Use:   "deploy <service_name>",
-	Short: "Manually trigger full deployment for a service",
-	Args:  cobra.ExactArgs(1),
+	Use:     "deploy <service_name>",
+	Aliases: []string{"dep"},
+	Short:   "Manually trigger full deployment for a service",
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		serviceName := args[0]
 		noFork, _ := cmd.Flags().GetBool("no-fork")
