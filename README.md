@@ -1,16 +1,20 @@
 # deployd
 
-自动化部署守护进程 — 一个在后台运行的 CLI 工具，接收来自 GitHub / Gitee 的 Webhook 事件，自动完成服务的构建与重启。
+自动化部署守护进程 - 一个在后台运行的 CLI 工具，接收来自 GitHub / Gitee 的 Webhook 事件，自动完成服务的构建、归位与重启。
 
 ## 功能特性
 
-- **后台守护进程** — 在系统后台运行，不受终端关闭影响
-- **Webhook 服务器** — 监听 GitHub / Gitee 推送事件，按仓库 URL 匹配对应服务
-- **插件化部署器** — 可扩展的 Deployer 接口（Spring Boot 等）
-- **邮件通知** — 通过 SMTP 或 Resend API 在部署成功/失败时发送 HTML 邮件
-- **CLI 管理** — 完整的守护进程和服务生命周期管理命令
-- **交互式配置向导** — `deployd config` 引导完成配置
-- **发布自动化** — GitHub Actions 自动构建 macOS / Linux 二进制
+- **五种部署模型** - `jvm`（Spring Boot 等 jar 服务）、`docker`（容器）、`static`（Vue/React 静态站点，nginx 托管）、`node`（SSR/Express 常驻进程）、`python`（FastAPI/Flask 等 ASGI/WSGI 服务）
+- **后台守护进程** - 在系统后台运行，不受终端关闭影响
+- **Webhook 服务器** - 监听 GitHub / Gitee 推送事件，按仓库 URL + 分支匹配对应服务
+- **同服务部署合并队列** - 连续推送自动合并为一次部署（只部署最新提交），flock 文件锁跨进程串行化，手动/自动部署互不冲突
+- **部署生命周期分阶段** - 构建（Build）→ 归位（Stage，仅部署时执行）→ 停旧 → 启新（纯启动），重启不重复归位/迁移
+- **命令经 shell 执行** - `&&`、`|`、`>`、`$VAR` 等语义完整支持；build 支持命令列表
+- **git 快路径** - 已有仓库直接 `fetch + reset --hard`，失败自动回退全量克隆
+- **邮件通知** - 通过 SMTP 或 Resend API 在部署成功/失败时发送 HTML 邮件（含失败阶段）
+- **插件注册表** - 新增服务类型只需实现 Deployer 接口并自注册，无需改动调度代码
+- **交互式配置向导** - `deployd config` 按部署模型引导配置
+- **发布自动化** - GitHub Actions 自动构建 macOS / Linux 二进制
 
 ## 安装
 
@@ -55,7 +59,7 @@ chmod +x /usr/local/bin/deployd
 ### 快速开始
 
 ```bash
-# 1. 运行交互式配置向导
+# 1. 运行交互式配置向导（按部署模型引导）
 deployd config
 
 # 2. 启动守护进程
@@ -64,14 +68,21 @@ deployd start
 # 3. 查看状态（守护进程 + 所有服务）
 deployd status
 
-# 4. 手动触发完整部署（构建 + 重启 + 通知）
-deployd deploy <服务名>
+# 4. 手动触发完整部署（拉取 -> 构建 -> 归位 -> 重启 -> 通知）
+deployd deploy <服务名>          # 可用缩写 deployd dep <服务名>
 
-# 5. 查看日志
+# 5. 服务生命周期（不重新构建）
+deployd svc <服务名>             # 查看服务状态
+deployd svc <服务名> -s          # 启动
+deployd svc <服务名> -t          # 停止
+deployd svc <服务名> -r          # 重启
+
+# 6. 查看日志
 deployd logs              # 守护进程日志
 deployd logs <服务名>     # 服务日志
+deployd logs <服务名> -f  # 实时跟踪
 
-# 6. 停止守护进程
+# 7. 停止守护进程
 deployd stop
 ```
 
@@ -86,28 +97,25 @@ deployd stop
 | `deployd restart [-c 路径]` | 重启守护进程 |
 | `deployd status` | 显示守护进程及所有服务状态 |
 | `deployd logs [服务名] [-f]` | 查看日志，加 `-f` 实时跟踪 |
-| `deployd deploy <名称> [-c 路径]` | 手动触发指定服务的完整部署流程 |
+| `deployd deploy <名称> [-c 路径]` | 手动触发指定服务的完整部署流程（别名 `dep`） |
 | `deployd config` | 交互式配置向导 |
 
 #### 服务生命周期命令
 
 | 命令 | 描述 |
 |------|------|
-| `deployd service start <名称> [-c 路径]` | 启动服务（不重新构建） |
-| `deployd service stop <名称> [-c 路径]` | 停止服务 |
-| `deployd service restart <名称> [-c 路径]` | 重启服务（不重新构建） |
+| `deployd svc <名称> -s` | 启动服务（不重新构建） |
+| `deployd svc <名称> -t` | 停止服务 |
+| `deployd svc <名称> -r` | 重启服务（不重新构建，不重复归位/迁移） |
+| `deployd svc <名称>` | 查看服务状态 |
+| `deployd service start/stop/restart <名称>` | 长形式，等价于上面的短旗标 |
 
-> 服务管理命令仅执行进程生命周期操作，不触发构建。执行完整构建 + 部署流程请使用 `deployd deploy`。
+> 服务生命周期命令只做进程操作，不触发构建；完整流程用 `deploy`。
+> **static 类型没有独立进程**，`-s/-t/-r` 会被明确拒绝，重新发布请用 `deploy`。
 
 #### 配置文件优先级
 
 `-c` 标志 > 当前目录 `config.yaml` > `~/.deployd/config.yaml`
-
-### 配置文件
-
-```bash
-cp config.yaml.example config.yaml
-```
 
 ## Webhook URL 配置
 
@@ -120,7 +128,7 @@ http://<服务器IP>:<端口>/webhook
 默认端口 `9527`，`server.host` 默认 `0.0.0.0`（监听所有网卡）。
 
 **GitHub 配置步骤：**
-1. 仓库 → Settings → Webhooks → Add webhook
+1. 仓库 -> Settings -> Webhooks -> Add webhook
 2. Payload URL 填入 `http://<你的服务器IP>:9527/webhook`
 3. Content type 选择 `application/json`
 4. Secret 可填（当前未启用签名验证，可留空）
@@ -128,60 +136,106 @@ http://<服务器IP>:<端口>/webhook
 6. 点击 Add webhook
 
 **Gitee 配置步骤：**
-1. 仓库 → 管理 → WebHooks → 添加 WebHook
+1. 仓库 -> 管理 -> WebHooks -> 添加 WebHook
 2. URL 填入 `http://<你的服务器IP>:9527/webhook`
 3. 选择触发事件：Push 事件
 4. 点击确认
 
 > **注意：** 服务器需要有公网 IP 或可通过内网穿透暴露该端口，否则 GitHub/Gitee 无法回调。
 
-## 配置项说明
+## 配置说明
+
+配置分两层：**通用层**（所有模型一致：`name/type/repo/workspace/build`）和**策略层**（`deploy:`，结构由 `type` 决定）。命令均经 `sh -c` 执行。
 
 ```bash
-cp config.yaml.example config.yaml
+cp config.yaml.example config.yaml   # 模板内含全部五种模型的带注释示例
 ```
+
+### 通用配置项
 
 | 配置路径 | 说明 | 示例 |
 |----------|------|------|
-| `server.host` | 监听地址。`0.0.0.0` 监听所有网卡（允许外部访问），`127.0.0.1` 仅本机可访问 | `"0.0.0.0"` |
-| `server.port` | Webhook 监听端口 | `9527` |
-| `webhook.secret` | Webhook 签名验证密钥（预留字段，暂未启用） | `""` |
-| `smtp.host` | SMTP 邮件服务器地址（Resend 方式时不需要） | `"smtp.qq.com"` |
-| `smtp.port` | SMTP 端口，`465` 为 SSL，`587` 为 STARTTLS | `465` |
-| `smtp.username` | 邮箱地址 | `"user@qq.com"` |
-| `smtp.token` | 邮箱授权码（非登录密码，需在邮箱设置中生成） | `"xxxxxxxx"` |
-| `smtp.tls` | 是否启用 TLS/SSL 连接 | `true` |
-| `resend.api_key` | Resend API Key（[获取地址](https://resend.com/api-keys)） | `"re_xxx"` |
-| `resend.from` | 发件人地址 | `"deployd <onboarding@example.com>"` |
-| `notifications.to` | 部署通知邮件收件人列表 | `["admin@example.com"]` |
+| `server.host` / `server.port` | 监听地址 / 端口 | `"0.0.0.0"` / `9527` |
+| `smtp.*` / `resend.*` | 邮件通知（二选一，详见下方） | |
+| `notifications.to` | 部署通知收件人列表（提交作者始终默认收件） | `["admin@example.com"]` |
 | `services[].name` | 服务名称，用于日志和管理命令 | `"my-app"` |
-| `services[].type` | 服务类型，目前支持 `springboot` | `"springboot"` |
-| `services[].repo.url` | Git 仓库地址（HTTPS 格式，会自动转为 SSH） | `"https://github.com/user/repo.git"` |
-| `services[].repo.branch` | 部署分支 | `"main"` |
+| `services[].type` | 部署模型：`jvm` / `docker` / `static` / `node` / `python`（`springboot` 为 `jvm` 别名） | `"jvm"` |
+| `services[].repo.url` / `.branch` | Git 仓库地址（HTTPS 自动转 SSH）/ 分支 | `"main"` |
 | `services[].workspace` | 代码克隆和工作目录 | `"/opt/deployd/apps/my-app"` |
-| `services[].build.command` | 构建命令 | `"mvn package -DskipTests"` |
-| `services[].run.command` | 启动命令 | `"/opt/deployd/apps/my-app/start.sh"` |
+| `services[].build.command` | 构建命令，支持单条字符串或命令列表 | `"mvn package -DskipTests"` |
+
+### 各模型 `deploy:` 策略配置
+
+**jvm**（Spring Boot 等 `java -jar` 服务）
+
+```yaml
+deploy:
+  # artifact: "target/*.jar"   # 可选：产物 glob。不填=原地启动(run 写 target/xxx.jar)
+  # dest: "/opt/app"           # 可选：归位目录。填了才拷贝；run 也会在该目录下执行
+  run: "java -jar hello-world-0.0.1.jar"   # 纯启动，不要写 nohup/&（后台化由工具负责）
+  env: { JAVA_OPTS: "-Xms100m" }           # 可选：运行时环境变量
+```
+
+> workspace 里有 `.java-version` 时自动选用对应 JDK（支持 jenv / macOS java_home）。
+
+**static**（Vue/React SPA、SSG，无独立进程）
+
+```yaml
+deploy:
+  artifact: "dist/*"                        # 构建产物
+  dest: "/usr/share/nginx/html/app"         # 拷贝到 nginx 目录
+  nginx_reload: true                        # 拷贝后执行 nginx -s reload
+  health: "https://app.example.com/health"  # status 通过健康检查 URL 判定
+```
+
+**node**（Next.js SSR / Express 等常驻进程）
+
+```yaml
+deploy:
+  run: "node server.js"
+  env: { NODE_ENV: "production" }
+```
+
+**python**（FastAPI/Flask/Django，源码即产物）
+
+```yaml
+build:
+  command: ["python3.11 -m venv .venv", ".venv/bin/pip install ."]
+deploy:
+  venv: ".venv"                              # 可选：其 bin 自动前置 PATH
+  migrate: ".venv/bin/alembic upgrade head"  # 可选：迁移(部署专属,重启不执行)
+  run: ".venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"
+  env: { DATABASE_URL: "..." }
+```
+
+**docker**（容器）
+
+```yaml
+deploy:
+  image: "app:latest"
+  container: "app"              # 默认取服务名
+  ports: ["8000:8000"]
+  env: { FOO: "bar" }
+  volumes: ["/data:/data"]
+  # args: ["--memory=512m"]     # 额外 docker run 参数
+```
 
 ### 命令执行注意事项
 
-- **不经过 shell 执行**，`&&`、`||`、`|`、`;` 等 shell 操作符无效
-- **build 命令**在 `workspace` 目录下执行
-- **run 命令**在 `workspace` 目录下执行（即 `java -jar xxx.jar` 会在 workspace 下找 jar 文件）
-- 需要多步操作时，编写 shell 脚本并传入脚本路径：
+- **命令经 `sh -c` 执行**，`&&`、`||`、`|`、`>`、`$VAR` 等 shell 语义均可使用
+- **build** 支持三种写法：命令列表（推荐，任一步失败即停）、多行字符串、单行 `&&` 连接；在 `workspace` 下执行
+- **run 是纯启动命令**：不要写 `nohup`/`&`/重定向——后台化、PID 记录、停止都由 deployd 负责（记录真实进程 PID，`svc -t` 能准确杀掉）
+- run 需要多步操作时，长驻命令必须放**最后一行**（shell 会 exec 替换，保证 PID 正确）；更推荐把准备动作放进 build
+
+### 从旧版本迁移
+
+旧配置的顶层 `run:` 字段已移除，启动时检测到会打印迁移提示：
 
 ```yaml
-services:
-  - name: "my-app"
-    workspace: "/opt/deployd/apps/my-app"
-    run:
-      command: "/opt/deployd/apps/my-app/start.sh"
-```
-
-```bash
-# start.sh
-#!/bin/bash
-cd /opt/deployd/apps/my-app
-java -jar my-app.jar --spring.profiles.active=prod > logs/app.log 2>&1 &
+# 旧                                # 新
+type: springboot                    type: jvm
+run: { command: "java -jar a.jar" } deploy: { run: "java -jar a.jar" }
+# 在 run.command 里自己 mv jar 的写法 → deploy: { artifact: "target/*.jar", dest: "/目标目录" }
 ```
 
 ### SSH 密钥认证
@@ -201,21 +255,11 @@ deployd 使用 SSH 密钥认证访问 Git 仓库。启动时会自动检测 `~/.
    ```
 
 2. **配置公钥到 Git 平台**：
-   - **GitHub**：Settings → SSH and GPG keys → New SSH key
-   - **Gitee**：设置 → 安全设置 → SSH公钥
+   - **GitHub**：Settings -> SSH and GPG keys -> New SSH key
+   - **Gitee**：设置 -> 安全设置 -> SSH公钥
    - 将上面输出的公钥粘贴进去
 
-3. **如果拉取代码报认证错误**，deployd 会自动提示：
-   ```
-   [warn] SSH authentication failed. Public key to configure on your Git platform:
-     ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... deployd@auto-generated
-
-   1. Add the above public key to your GitHub/Gitee account:
-      GitHub: Settings → SSH and GPG keys → New SSH key
-      Gitee:  设置 → 安全设置 → SSH公钥
-   2. Key file: /home/user/.ssh/id_ed25519
-   3. Re-run: deployd deploy <服务名>
-   ```
+3. **如果拉取代码报认证错误**，deployd 会自动提示公钥配置指引。
 
 ### 邮件通知
 
@@ -234,7 +278,7 @@ smtp:
   tls: true
 ```
 
-SMPT 端口 `465` 使用 SSL 连接，端口 `587` 使用 STARTTLS。
+SMTP 端口 `465` 使用 SSL 连接，端口 `587` 使用 STARTTLS。
 
 **方式二：Resend API（推荐，无需配置 SMTP）**
 
@@ -249,96 +293,64 @@ resend:
 邮件通知规则：
 - **收件人**：配置的 `notifications.to` 列表 + Webhook Payload 或 Git 日志中的提交者邮箱
 - **成功主题**：`[deployd] ✅ 部署成功: <服务名>`
-- **失败主题**：`[deployd] ❌ 部署失败: <服务名>`
-- 失败邮件包含错误信息和失败阶段，方便排查问题
-
-### 完整配置示例
-
-```yaml
-# deployd global configuration
-server:
-  host: "0.0.0.0"    # 0.0.0.0 = 监听所有网卡；127.0.0.1 = 仅本机可访问
-  port: 9527         # Webhook 监听端口
-
-webhook:
-  secret: ""         # 预留字段，暂未启用签名验证
-
-# SMTP 邮件通知配置（Resend 方式时不需要）
-smtp:
-  host: "smtp.qq.com"
-  port: 465
-  username: "your-email@qq.com"
-  token: "your-smtp-authorization-code"  # 邮箱授权码，非登录密码
-  tls: true
-
-# Resend API 配置（替代 SMTP，发送邮件通过 Resend HTTP API）
-# 获取 API Key: https://resend.com/api-keys
-# 配置发件域名: https://resend.com/domains
-resend:
-  api_key: ""
-  from: "deployd <onboarding@your-domain.com>"
-
-# 部署通知收件人
-notifications:
-  to:
-    - "admin@example.com"
-
-# 服务列表
-services:
-  - name: "my-springboot-app"
-    type: "springboot"
-    repo:
-      # Git 仓库地址（HTTPS 格式，deployd 会自动转为 SSH）
-      url: "https://github.com/user/repo.git"
-      # SSH 私钥路径（可选，留空则使用 ~/.ssh/id_ed25519）
-      # 首次启动 deployd 会自动在 ~/.ssh/ 生成密钥并提示配置公钥
-      branch: "main"
-    # 代码克隆和工作目录
-    workspace: "/opt/deployd/apps/my-springboot-app"
-    # 构建命令
-    build:
-      command: "mvn package -DskipTests"
-    # 启动命令
-    run:
-      command: "/opt/deployd/apps/my-springboot-app/start.sh"
-```
+- **失败主题**：`[deployd] ❌ 部署失败: <服务名>`，正文含失败阶段（fetch/build/stage/start）和完整错误信息
 
 ## 部署流程
 
 ### Webhook 自动部署
 
 ```
-GitHub/Gitee Push → Webhook 服务器 → 匹配服务 → 拉取代码 → 调用插件构建 → 重启进程 → 发送通知
+GitHub/Gitee Push
+      │
+      ▼
+Webhook 服务器（按 仓库URL+分支 匹配服务）
+      │
+      ▼
+同服务合并队列（连续推送合并为最新一次；flock 锁跨进程串行）
+      │
+      ▼
+拉取代码（快路径 fetch+reset，失败回退全量克隆）
+      ▼
+Build（执行 build.command）
+      ▼
+Stage（部署专属：拷贝产物到 dest / 数据库迁移 / nginx reload；重启时跳过）
+      ▼
+停旧进程（如有）──▶ 启动新进程（记录真实 PID）──▶ 发送邮件通知
 ```
 
-### 手动部署（`deployd deploy`）
-
-```
-指定服务名 → 拉取最新代码 → 调用插件构建 → 停止旧进程 → 启动新进程 → 发送通知
-```
+`deployd deploy <名称>` 走同一条流水线，只是不经过队列（部署中会直接提示"请勿重复操作"）。
 
 ## 架构
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  GitHub/Gitee│────▶│  Webhook     │────▶│  Orchestrator│
-│  推送事件     │     │  服务器       │     │  编排层       │
+│  GitHub/Gitee│────▶│  Webhook     │────▶│  合并队列+锁  │
+│  推送事件     │     │  服务器       │     │  同服务串行化 │
 └──────────────┘     └──────────────┘     └──────┬───────┘
                                                  │
-                         ┌───────────────────────┼───────────────────────┐
-                         ▼                       ▼                       ▼
-                    ┌──────────┐          ┌──────────┐          ┌──────────┐
-                    │ Plugin   │          │ 进程管理  │          │ 邮件通知  │
-                    │ 部署器    │          │ PID 文件  │          │ SMTP/    │
-                    │ 插件化   │          │ 管理      │          │ Resend   │
-                    └──────────┘          └──────────┘          └──────────┘
+                                                 ▼
+                                          ┌──────────────┐
+                     ┌───────────────────▶│  Orchestrator │
+                     │                    │  编排层       │
+                     │                    └──────┬───────┘
+                     │ registry.Get(type)        │ Build ▸ Stage ▸ Stop? ▸ Start?
+                     │                           ▼
+        ┌────────────────────────────────────────────────────┐
+        │              Plugin Registry（插件注册表）             │
+        │   jvm    docker    static    node    python         │
+        └────────────────────────────────────────────────────┘
+              │        │                    │         │
+           PID 管理  容器生命周期      无进程(nginx)  PID 管理
 ```
 
-- **Webhook 服务器** — 解析推送事件，按仓库 URL 匹配已配置的服务
-- **部署编排层** — 统一处理代码拉取、构建、重启、通知等跨类型逻辑
-- **部署器插件** — 按服务类型执行构建和重启逻辑，支持扩展新类型
-- **进程管理器** — 跟踪运行中的进程，管理服务生命周期
-- **邮件通知器** — 通过 SMTP 或 Resend API 异步发送部署结果邮件
+- **Webhook 服务器** - 解析推送事件，按仓库 URL + 分支匹配已配置的服务
+- **合并队列 + 部署锁** - 同服务 webhook 触发合并去重、串行执行；手动部署与队列互斥
+- **部署编排层** - 统一处理拉取、通知等跨类型逻辑；按部署模型能力决定是否执行停/启（static 无进程则跳过）
+- **插件注册表 + 五种模型插件** - 按服务类型分发；新增类型只需实现 Deployer 接口并在 `init()` 自注册
+- **进程管理器** - PID 文件跟踪运行中的进程，管理服务生命周期
+- **邮件通知器** - 通过 SMTP 或 Resend API 发送部署结果邮件
+
+更多设计细节见 `docs/superpowers/specs/`（生命周期重构设计、合并队列设计等）。
 
 ## 开发
 
@@ -349,9 +361,15 @@ go build -o deployd .
 # 运行测试
 go test ./...
 
-# 代码检查（需安装 golangci-lint）
-golangci-lint run
+# 代码检查
+go vet ./...
 ```
+
+### 新增部署模型
+
+1. 在 `plugins/<type>/` 实现 Deployer 接口（`Build/Stage/Status`；有独立进程再实现 `Start/Stop`），`init()` 中调用 `registry.Register`
+2. 在 `plugins/plugins.go` 加 blank import，在 `internal/config/validate.go` 的 `supportedTypes` 加类型名
+3. （可选）更新 `config.yaml.example` 与配置向导模板
 
 ## 许可证
 
