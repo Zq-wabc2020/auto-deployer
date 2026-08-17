@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/auto-deployer/auto-deployer/internal/build"
 )
 
 // Manager manages the lifecycle of a background process using a PID file.
@@ -50,6 +52,40 @@ func (m *Manager) Start(name string, args ...string) error {
 	}
 
 	fmt.Fprintf(m.out, "started %s with pid %d\n", name, cmd.Process.Pid)
+	return nil
+}
+
+// StartShell starts `sh -c command` in dir (empty = current dir) with extra
+// env overrides applied, in its own process group, and records the real PID:
+// for a single-command string the shell execs it, so the recorded PID is the
+// server process itself and Stop can signal it directly. Shared by every
+// PID-model plugin (jvm/node/python).
+func (m *Manager) StartShell(dir, command string, envOverrides map[string]string, out io.Writer) error {
+	if m.Status() == "running" {
+		pid, _ := m.ReadPID()
+		return fmt.Errorf("process already running with pid %d", pid)
+	}
+
+	cmd := exec.Command("sh", "-c", command)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	// App runtime stdout/stderr discarded (log approach A): the service log
+	// holds deploy pipeline logs only; the app logs to its own sink.
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if len(envOverrides) > 0 {
+		cmd.Env = build.MergeEnv(os.Environ(), envOverrides)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start process: %w", err)
+	}
+	if err := m.WritePID(cmd.Process.Pid); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "started with pid %d\n", cmd.Process.Pid)
 	return nil
 }
 

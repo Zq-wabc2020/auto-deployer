@@ -8,6 +8,8 @@ var supportedTypes = map[string]bool{
 	"jvm":        true,
 	"springboot": true, // 兼容别名
 	"docker":     true,
+	"static":     true,
+	"node":       true,
 }
 
 func Validate(cfg *AppConfig) []error {

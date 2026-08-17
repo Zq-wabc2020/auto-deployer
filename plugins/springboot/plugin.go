@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -61,6 +60,11 @@ func (p *Plugin) deployConfig(svc *config.ServiceConfig) jvmDeployConfig {
 	return dc
 }
 
+func pidFileFor(name string) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".deployd", "run", name+".pid")
+}
+
 // Build executes the configured build command (shell). Artifact placement and
 // workspace cleanup are Stage's job, not Build's.
 func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
@@ -87,7 +91,7 @@ func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	if dest == "" {
 		dest = svc.Workspace // default: workspace root (preserves old moveJarToRoot behavior)
 	}
-	if err := copyArtifact(svc.Workspace, dc.Artifact, dest, p.output); err != nil {
+	if err := build.CopyArtifact(svc.Workspace, dc.Artifact, dest, p.output); err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
 	if err := cleanWorkspace(svc.Workspace); err != nil {
@@ -99,17 +103,10 @@ func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	return nil
 }
 
-// Start launches the run command (pure launch, no placement) via `sh -c` in a
-// detached process group and records its PID. The run command must NOT include
-// nohup/& -- backgrounding is the tool's job (process.Manager / Setpgid).
+// Start launches the run command (pure launch, no placement) via the shared
+// PID-managed shell starter. The run command must NOT include nohup/& --
+// backgrounding is the tool's job.
 func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
-	pidFile := filepath.Join(daemonDir(), svc.Name+".pid")
-	mgr := process.NewManager(pidFile)
-
-	if mgr.Status() == "running" {
-		return fmt.Errorf("service %s is already running", svc.Name)
-	}
-
 	dc := p.deployConfig(svc)
 	if dc.Run == "" {
 		return fmt.Errorf("run command is empty (configure deploy.run)")
@@ -121,14 +118,6 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	if dc.Artifact != "" && dc.Dest != "" {
 		runDir = dc.Dest
 	}
-
-	cmd := exec.Command("sh", "-c", dc.Run)
-	cmd.Dir = runDir
-	// Option A: app runtime stdout/stderr discarded; the service log holds deploy
-	// pipeline logs only. The app must log to its own file (e.g. logback).
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	overrides := map[string]string{}
 	if javaVersion := detectJavaVersion(svc.Workspace); javaVersion != "" {
@@ -143,38 +132,22 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	for k, v := range dc.Env {
 		overrides[k] = v
 	}
-	if len(overrides) > 0 {
-		cmd.Env = build.MergeEnv(os.Environ(), overrides)
-	}
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start process: %w", err)
-	}
-	if err := mgr.WritePID(cmd.Process.Pid); err != nil {
-		return err
-	}
-	fmt.Fprintf(p.output, "started %s with pid %d\n", svc.Name, cmd.Process.Pid)
-	return nil
+	mgr := process.NewManager(pidFileFor(svc.Name))
+	return mgr.StartShell(runDir, dc.Run, overrides, p.output)
 }
 
 // Stop terminates the managed process.
 func (p *Plugin) Stop(ctx context.Context, svc *config.ServiceConfig) error {
-	pidFile := filepath.Join(daemonDir(), svc.Name+".pid")
-	mgr := process.NewManager(pidFile)
+	mgr := process.NewManager(pidFileFor(svc.Name))
 	mgr.SetOutput(p.output)
 	return mgr.Stop()
 }
 
 // Status returns the current status of the service.
 func (p *Plugin) Status(ctx context.Context, svc *config.ServiceConfig) (string, error) {
-	pidFile := filepath.Join(daemonDir(), svc.Name+".pid")
-	mgr := process.NewManager(pidFile)
+	mgr := process.NewManager(pidFileFor(svc.Name))
 	return mgr.Status(), nil
-}
-
-func daemonDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".deployd", "run")
 }
 
 // detectJavaVersion reads .java-version file from workspace.
@@ -199,52 +172,8 @@ func findJavaHome(version string) string {
 	return ""
 }
 
-// copyArtifact copies files matching pattern (glob, relative to workspace) to dest.
-func copyArtifact(workspace, pattern, dest string, out io.Writer) error {
-	matches, err := filepath.Glob(filepath.Join(workspace, pattern))
-	if err != nil {
-		return err
-	}
-	if len(matches) == 0 {
-		return fmt.Errorf("no artifact matching %s", pattern)
-	}
-	if err := os.MkdirAll(dest, 0755); err != nil {
-		return err
-	}
-	copied := 0
-	for _, src := range matches {
-		if strings.HasSuffix(src, ".original.jar") {
-			continue
-		}
-		dst := filepath.Join(dest, filepath.Base(src))
-		if err := copyFile(src, dst); err != nil {
-			return fmt.Errorf("failed to copy %s: %w", filepath.Base(src), err)
-		}
-		fmt.Fprintf(out, "[springboot] copied %s to %s\n", filepath.Base(src), dest)
-		copied++
-	}
-	if copied == 0 {
-		return fmt.Errorf("no artifact copied from %s", pattern)
-	}
-	return nil
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
-}
-
-// cleanWorkspace removes all files except jar files and .java-version.
+// cleanWorkspace removes all files except jar files, .java-version and .git
+// (.git is kept so the next deploy's Fetch can take the fast path).
 func cleanWorkspace(workspace string) error {
 	entries, err := os.ReadDir(workspace)
 	if err != nil {
@@ -254,12 +183,7 @@ func cleanWorkspace(workspace string) error {
 		if strings.HasSuffix(entry.Name(), ".jar") {
 			continue
 		}
-		if entry.Name() == ".java-version" {
-			continue
-		}
-		// Keep .git so the next deploy's Fetch can take the fast path
-		// (fetch + reset --hard) instead of a full clean re-clone.
-		if entry.Name() == ".git" {
+		if entry.Name() == ".java-version" || entry.Name() == ".git" {
 			continue
 		}
 		path := filepath.Join(workspace, entry.Name())
