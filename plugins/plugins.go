@@ -6,6 +6,7 @@ package plugins
 import (
 	_ "github.com/auto-deployer/auto-deployer/plugins/docker"
 	_ "github.com/auto-deployer/auto-deployer/plugins/node"
+	_ "github.com/auto-deployer/auto-deployer/plugins/python"
 	_ "github.com/auto-deployer/auto-deployer/plugins/springboot"
 	_ "github.com/auto-deployer/auto-deployer/plugins/static"
 )

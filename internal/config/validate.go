@@ -10,6 +10,7 @@ var supportedTypes = map[string]bool{
 	"docker":     true,
 	"static":     true,
 	"node":       true,
+	"python":     true,
 }
 
 func Validate(cfg *AppConfig) []error {
