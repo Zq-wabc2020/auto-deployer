@@ -223,9 +223,32 @@ deploy:
 ### 命令执行注意事项
 
 - **命令经 `sh -c` 执行**，`&&`、`||`、`|`、`>`、`$VAR` 等 shell 语义均可使用
-- **build** 支持三种写法：命令列表（推荐，任一步失败即停）、多行字符串、单行 `&&` 连接；在 `workspace` 下执行
+- **build** 支持三种写法；在 `workspace` 下执行：
+
+```yaml
+build:
+  # 写法1：命令列表（推荐，任一步失败即停）
+  command: ["mvn clean package -Dmaven.test.skip=true", "cp README.md target/"]
+
+  # 写法2：多行字符串（每行都执行，但某行失败不会中断后续行）
+  # command: |
+  #   echo "step 1"
+  #   mvn clean package -Dmaven.test.skip=true
+
+  # 写法3：单行 && 连接（等价写法1的语义）
+  # command: "mvn clean package -Dmaven.test.skip=true && cp README.md target/"
+```
+
 - **run 是纯启动命令**：不要写 `nohup`/`&`/重定向——后台化、PID 记录、停止都由 deployd 负责（记录真实进程 PID，`svc -t` 能准确杀掉）
-- run 需要多步操作时，长驻命令必须放**最后一行**（shell 会 exec 替换，保证 PID 正确）；更推荐把准备动作放进 build
+- run 需要多步操作时，长驻命令必须放**最后一行**（shell 会 exec 替换，保证 PID 正确）；更推荐把准备动作放进 build：
+
+```yaml
+deploy:
+  run: |
+    echo "preparing..."
+    cp backup/app.jar . 2>/dev/null || true
+    java -jar hello-world-0.0.1.jar   # 长驻命令，必须放最后一行
+```
 
 ### 从旧版本迁移
 
