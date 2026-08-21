@@ -9,14 +9,21 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 )
+
+// defaultStopTimeout is how long Stop waits after SIGTERM before escalating
+// to SIGKILL. Spring Boot graceful shutdown can take seconds.
+const defaultStopTimeout = 10 * time.Second
 
 // Manager manages the lifecycle of a background process using a PID file.
 type Manager struct {
 	pidFilePath string
 	out         io.Writer
+	// stopTimeout overrides the SIGTERM->SIGKILL escalation delay (tests).
+	stopTimeout time.Duration
 }
 
 // NewManager creates a new process manager for the given PID file path.
@@ -29,6 +36,11 @@ func NewManager(pidFilePath string) *Manager {
 // SetOutput redirects Start/Stop lifecycle messages to the given writer.
 func (m *Manager) SetOutput(w io.Writer) {
 	m.out = w
+}
+
+// SetStopTimeout overrides how long Stop waits after SIGTERM before SIGKILL.
+func (m *Manager) SetStopTimeout(d time.Duration) {
+	m.stopTimeout = d
 }
 
 // Start launches a command and records its PID.
@@ -46,6 +58,9 @@ func (m *Manager) Start(name string, args ...string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
+	// Reap the child when it exits so it does not linger as a zombie (which
+	// would make liveness checks report it forever).
+	go func() { _ = cmd.Wait() }()
 
 	if err := m.WritePID(cmd.Process.Pid); err != nil {
 		return err
@@ -60,6 +75,11 @@ func (m *Manager) Start(name string, args ...string) error {
 // for a single-command string the shell execs it, so the recorded PID is the
 // server process itself and Stop can signal it directly. Shared by every
 // PID-model plugin (jvm/node/python).
+//
+// NOTE: on shells that do NOT exec-replace (dash, the default /bin/sh on
+// Ubuntu), the recorded PID is the sh wrapper and the real server is its
+// child. Stop therefore signals the whole process GROUP, which covers both
+// cases -- see Stop.
 func (m *Manager) StartShell(dir, command string, envOverrides map[string]string, out io.Writer) error {
 	if m.Status() == "running" {
 		pid, _ := m.ReadPID()
@@ -82,6 +102,9 @@ func (m *Manager) StartShell(dir, command string, envOverrides map[string]string
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
+	// Reap the wrapper when it exits (avoids zombies under the daemon).
+	go func() { _ = cmd.Wait() }()
+
 	if err := m.WritePID(cmd.Process.Pid); err != nil {
 		return err
 	}
@@ -89,29 +112,78 @@ func (m *Manager) StartShell(dir, command string, envOverrides map[string]string
 	return nil
 }
 
-// Stop terminates the managed process by sending SIGTERM.
+// Stop terminates the managed process GROUP: SIGTERM, wait for exit, then
+// SIGKILL. Killing the whole group is essential because the launcher is
+// `sh -c <command>` and shells differ: bash (RHEL/ALinux, macOS) exec-replaces
+// itself so the PID is the server, but dash (Ubuntu's /bin/sh) keeps the
+// wrapper as parent -- signalling only the PID would orphan the real server,
+// leaking one process per deploy. Waiting for exit prevents the new process
+// from racing the old one's graceful shutdown (port conflicts).
 func (m *Manager) Stop() error {
 	pid, err := m.ReadPID()
 	if err != nil || pid == 0 {
 		return nil
 	}
 
-	proc, err := os.FindProcess(pid)
-	if err != nil {
+	timeout := m.stopTimeout
+	if timeout <= 0 {
+		timeout = defaultStopTimeout
+	}
+
+	if !signalPid(pid, syscall.SIGTERM) {
+		// Already gone.
+		_ = m.CleanupPID()
+		return nil
+	}
+	if waitPidGone(pid, timeout) {
+		_ = m.CleanupPID()
+		fmt.Fprintf(m.out, "stopped process %d\n", pid)
 		return nil
 	}
 
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		if err == syscall.ESRCH {
-			_ = m.CleanupPID()
-			return nil
-		}
-		return fmt.Errorf("failed to send SIGTERM: %w", err)
+	// Graceful shutdown timed out -- escalate.
+	_ = signalPid(pid, syscall.SIGKILL)
+	if waitPidGone(pid, 3*time.Second) {
+		_ = m.CleanupPID()
+		fmt.Fprintf(m.out, "stopped process %d (SIGKILL after timeout)\n", pid)
+		return nil
 	}
+	return fmt.Errorf("process %d did not exit after SIGKILL", pid)
+}
 
-	_ = m.CleanupPID()
-	fmt.Fprintf(m.out, "stopped process %d\n", pid)
-	return nil
+// signalPid sends sig to the process group of pid (our launched processes use
+// Setpgid, so pgid == pid), falling back to the bare pid for processes started
+// without a dedicated group (e.g. by older deployd binaries).
+func signalPid(pid int, sig syscall.Signal) bool {
+	if err := syscall.Kill(-pid, sig); err == nil {
+		return true
+	}
+	return syscall.Kill(pid, sig) == nil
+}
+
+// pidAlive reports whether the pid or its process group still exists. The
+// group check catches the case where the sh wrapper died but its children
+// (the real server) are still running.
+func pidAlive(pid int) bool {
+	if syscall.Kill(-pid, 0) == nil {
+		return true
+	}
+	return syscall.Kill(pid, 0) == nil
+}
+
+// waitPidGone polls until the process (group) no longer exists or the timeout
+// elapses. Returns true when it is gone.
+func waitPidGone(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if !pidAlive(pid) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // Status returns "running", "stopped", or "unknown".
