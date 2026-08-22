@@ -8,7 +8,9 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/auto-deployer/auto-deployer/internal/cache"
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/constants"
 	"github.com/auto-deployer/auto-deployer/internal/daemon"
 	"github.com/spf13/cobra"
 )
@@ -22,25 +24,38 @@ func init() {
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the deployd daemon",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (startErr error) {
 		path := configFile
 		if path == "" {
 			path = config.DefaultConfig()
 		}
 		if path == "" {
-			return fmt.Errorf("config file not found. Run 'deployd config' to create one, or use -c to specify path")
+			startErr = fmt.Errorf("config file not found. Run 'deployd config' to create one, or use -c to specify path")
+			return
 		}
+
+		defer func() {
+			if startErr != nil {
+				err := cache.Set(constants.START_CONFIG_PATH_KEY, path)
+				if err != nil {
+					fmt.Printf("Warning: failed to cache config path: %v", err)
+				}
+			}
+		}()
 
 		noFork, _ := cmd.Flags().GetBool("no-fork")
 		if noFork {
-			return daemon.Start(path)
+			startErr = daemon.Start(path)
+			return
 		}
 
 		// Fork to background on Linux, block in foreground on macOS
 		if runtime.GOOS == "linux" {
-			return forkToBackground(path)
+			startErr = forkToBackground(path)
+			return
 		}
-		return daemon.Start(path)
+		startErr = daemon.Start(path)
+		return
 	},
 }
 

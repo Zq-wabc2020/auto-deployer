@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/auto-deployer/auto-deployer/internal/cache"
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploy"
 	"github.com/auto-deployer/auto-deployer/internal/registry"
@@ -16,6 +17,9 @@ var rootCmd = &cobra.Command{
 	Use:   "deployd",
 	Short: "Automated deployment daemon",
 	Long:  "A CLI tool that runs as a background daemon, receives webhooks, and automates service deployment.",
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return cache.LoadCache()
+	},
 }
 
 var configFile string
