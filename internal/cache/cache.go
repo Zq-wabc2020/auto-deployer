@@ -62,12 +62,19 @@ func Set(key string, value string) error {
 }
 
 func getCacheFilePath() (path string, err error) {
-	path, err = os.UserHomeDir()
-	if err != nil {
-		return
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome != "" {
+		return filepath.Join(configHome, cacheFileDirectory, cacheFileName), nil
 	}
 
-	path = filepath.Join(path, cacheFileDirectory, cacheFileName)
+	home := os.Getenv("HOME")
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+	}
 
-	return path, nil
+	return filepath.Join(home, cacheFileDirectory, cacheFileName), nil
 }
