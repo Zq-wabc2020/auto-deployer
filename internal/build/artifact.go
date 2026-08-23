@@ -27,9 +27,19 @@ func CopyArtifact(workspace, pattern, destDir string, out io.Writer) error {
 		if strings.HasSuffix(src, ".original.jar") {
 			continue
 		}
-		dst := filepath.Join(destDir, filepath.Base(src))
-		if err := copyFile(src, dst); err != nil {
-			return fmt.Errorf("failed to copy %s: %w", filepath.Base(src), err)
+		srcInfo, err := os.Stat(src)
+		if err != nil {
+			return err
+		}
+		if srcInfo.IsDir() {
+			if err := copyDir(src, srcInfo.Name(), destDir); err != nil {
+				return fmt.Errorf("failed to copy dir %s: %w", src, err)
+			}
+		} else {
+			dst := filepath.Join(destDir, filepath.Base(src))
+			if err := copyFile(src, dst); err != nil {
+				return fmt.Errorf("failed to copy %s: %w", filepath.Base(src), err)
+			}
 		}
 		fmt.Fprintf(out, "copied %s to %s\n", filepath.Base(src), destDir)
 		copied++
@@ -37,6 +47,38 @@ func CopyArtifact(workspace, pattern, destDir string, out io.Writer) error {
 	if copied == 0 {
 		return fmt.Errorf("no artifact copied from %s", pattern)
 	}
+	return nil
+}
+
+func copyDir(oriPath, oriName, dest string) error {
+	dst := filepath.Join(dest, oriName)
+	err := os.MkdirAll(dst, 0755)
+	if err != nil {
+		return err
+	}
+
+	fileList, err := os.ReadDir(oriPath)
+
+	if err != nil {
+		return err
+	}
+
+	for _, item := range fileList {
+		srcPath := filepath.Join(oriPath, item.Name())
+		destPath := filepath.Join(dst, filepath.Base(srcPath))
+
+		var err error
+		if item.IsDir() {
+			err = copyDir(srcPath, item.Name(), dst)
+		} else {
+			err = copyFile(srcPath, destPath)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
