@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/auto-deployer/auto-deployer/internal/cache"
+	"github.com/auto-deployer/auto-deployer/internal/constants"
 	"gopkg.in/yaml.v3"
 )
 
@@ -87,10 +89,10 @@ type BuildConfig struct {
 }
 
 type ServiceConfig struct {
-	Name      string     `yaml:"name"`
-	Type      string     `yaml:"type"`
-	Repo      RepoConfig `yaml:"repo"`
-	Workspace string     `yaml:"workspace"`
+	Name      string      `yaml:"name"`
+	Type      string      `yaml:"type"`
+	Repo      RepoConfig  `yaml:"repo"`
+	Workspace string      `yaml:"workspace"`
 	Build     BuildConfig `yaml:"build"`
 	// Deploy is the raw strategy-layer node parsed by the type's plugin.
 	// NOTE: must be a value yaml.Node (a *yaml.Node field gets allocated but
@@ -142,6 +144,11 @@ func warnLegacyRunField(data []byte) {
 // 2. ~/.deployd/config.yaml
 // Returns empty string if none found.
 func DefaultConfig() string {
+	// 优先从缓存中拿
+	if cache.Get(constants.START_CONFIG_PATH_KEY) != "" {
+		return cache.Get(constants.START_CONFIG_PATH_KEY)
+	}
+
 	// Check current directory
 	if _, err := os.Stat("config.yaml"); err == nil {
 		return "config.yaml"
