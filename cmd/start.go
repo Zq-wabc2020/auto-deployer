@@ -36,7 +36,12 @@ var startCmd = &cobra.Command{
 
 		defer func() {
 			if startErr != nil {
-				err := cache.Set(constants.START_CONFIG_PATH_KEY, path)
+				absPath, err := filepath.Abs(path)
+				if err != nil {
+					return
+				}
+
+				err = cache.Set(constants.START_CONFIG_PATH_KEY, absPath)
 				if err != nil {
 					fmt.Printf("Warning: failed to cache config path: %v", err)
 				}
