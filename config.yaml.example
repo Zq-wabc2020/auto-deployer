@@ -37,6 +37,7 @@ services:
       url: "https://github.com/user/repo.git"   # Git 仓库地址（HTTPS 会自动转 SSH）
       branch: "main"                            # 部署分支
     workspace: "/opt/deployd/apps/my-springboot-app"   # 代码克隆与工作目录
+    timeout: "45m"                  # 可选：fetch+build+stage 总超时(默认 30m，所有模型通用)
     build:
       command: "mvn package -DskipTests"        # 通用：构建命令(shell)，支持 && 或列表形式
       # command: ["npm ci", "npm run build"]    #   列表形式：依次执行
@@ -54,22 +55,28 @@ services:
   #     url: "https://github.com/user/vue-app.git"
   #     branch: "main"
   #   workspace: "/opt/web-vue"
+  #   timeout: "45m"                       #   可选：fetch+build+stage 总超时(默认 30m，所有模型通用)
   #   build:
   #     command: "npm run build"
   #   deploy:
-  #     artifact: "dist/*"                       # 构建产物（glob）
+  #     artifact: "dist"                          # 构建产物目录（内容整体拷贝；也可用 glob 如 dist/*）
   #     dest: "/usr/share/nginx/html/vue"        # 拷贝到 nginx 目录
   #     nginx_reload: true                       # 部署后执行 nginx -s reload
   #     health: "https://app.example.com/health" # status 通过健康检查 URL 判定(HTTP 2xx/3xx=running)
 
   # ── node：Next.js SSR / Express 等长驻 Node 服务 ──
+  # 源码即产物(默认)：不配 artifact，run 直接在 workspace 启动(node server.js)。
+  # 也可归位：配 artifact+dest，把构建产物(如 .output)拷到 dest，run 在 dest 执行，
+  # 运行中的服务与下一次构建互不干扰（workspace 不清理，保留 node_modules 做增量构建）。
   # - name: "web-ssr"
   #   type: "node"
   #   repo: { url: "...", branch: "main" }
   #   workspace: "/opt/web-ssr"
   #   build: { command: "npm run build" }
   #   deploy:
-  #     run: "node server.js"
+  #     # artifact: ".output"            # 可选：产物目录/glob。不填=源码即产物(原地启动)
+  #     # dest: "/opt/web-ssr-run"       # 可选：归位目录。填了才拷贝，run 也在该目录执行
+  #     run: "node .output/server.mjs"   # 纯启动命令，不要写 nohup/&/pm2(后台化由工具负责)
   #     env: { NODE_ENV: "production" }
 
   # ── python：FastAPI/Flask 等 ASGI/WSGI 服务 ──
@@ -85,6 +92,7 @@ services:
   #     venv: ".venv"                             # 虚拟环境目录
   #     migrate: ".venv/bin/alembic upgrade head" # 可选：迁移(部署专属,不随重启执行)
   #     run: ".venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"
+  #     env: { DATABASE_URL: "postgresql://..." }   # 可选：运行时环境变量
 
   # ── docker：容器化服务 ──
   # - name: "svc-docker"
@@ -96,3 +104,6 @@ services:
   #     image: "app:latest"                       # 镜像
   #     container: "app"                          # 容器名
   #     ports: ["8000:8000"]                      # 端口映射
+  #     env: { FOO: "bar" }                       # 可选：容器环境变量
+  #     volumes: ["/data:/data"]                  # 可选：数据卷挂载
+  #     args: ["--memory=512m"]                   # 可选：额外 docker run 参数

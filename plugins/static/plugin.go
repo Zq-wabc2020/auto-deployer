@@ -56,8 +56,8 @@ type staticDeployConfig struct {
 func (p *Plugin) deployConfig(svc *config.ServiceConfig) staticDeployConfig {
 	var dc staticDeployConfig
 	if svc.Deploy.Kind != 0 { // zero node = no deploy: block
-		if err := svc.Deploy.Decode(&dc); err != nil {
-			fmt.Fprintf(p.output, "[static] warning: failed to parse deploy config: %v\n", err)
+		if err := config.StrictDecodeDeploy(svc.Deploy, &dc); err != nil {
+			fmt.Fprintf(p.output, "[static] warning: deploy 配置存在无法识别的字段(会被忽略,请检查是否用了其他模型的专属字段): %v\n", err)
 		}
 	}
 	return dc
@@ -68,7 +68,7 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if svc.Build.Command.Empty() {
 		return fmt.Errorf("build command is empty")
 	}
-	return build.ExecuteBuild(svc.Workspace, svc.Build.Command.String(), p.output)
+	return build.ExecuteBuild(ctx, svc.Workspace, svc.Build.Command.String(), p.output)
 }
 
 // Stage copies the built static files to the web-server docroot and (optionally)
@@ -78,14 +78,14 @@ func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	if dc.Artifact == "" || dc.Dest == "" {
 		return fmt.Errorf("static 服务要求 deploy.artifact 和 deploy.dest（如 artifact: dist/*, dest: /usr/share/nginx/html/app）")
 	}
-	if err := build.CopyArtifact(svc.Workspace, dc.Artifact, dc.Dest, p.output); err != nil {
+	if _, err := build.CopyArtifact(svc.Workspace, dc.Artifact, dc.Dest, p.output); err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
 	if dc.NginxReload {
 		cmd := exec.Command("sh", "-c", "nginx -s reload")
 		cmd.Stdout = p.output
 		cmd.Stderr = p.output
-		if err := cmd.Run(); err != nil {
+		if err := build.RunCommandCtx(ctx, cmd); err != nil {
 			return fmt.Errorf("nginx reload failed: %w", err)
 		}
 		fmt.Fprintln(p.output, "[static] nginx reloaded")

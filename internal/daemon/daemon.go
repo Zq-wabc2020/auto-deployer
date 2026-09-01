@@ -16,7 +16,6 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/webhook"
 )
 
-const defaultConfigName = "config.yaml"
 const pidDirName = ".deployd/run"
 const daemonLogName = "deployd.log"
 
@@ -24,8 +23,10 @@ const daemonLogName = "deployd.log"
 // and blocks until a termination signal is received.
 func Start(configPath string) error {
 	if configPath == "" {
-		home, _ := os.UserHomeDir()
-		configPath = filepath.Join(home, defaultConfigName)
+		// Same resolution order as every CLI command (cwd > ~/.deployd >
+		// daemon-recorded > legacy ~/config.yaml) so the daemon and the CLI
+		// can never end up reading different config files by default.
+		configPath = config.DefaultConfig()
 	}
 
 	// 1. Check config file exists
@@ -46,6 +47,10 @@ func Start(configPath string) error {
 		}
 		return fmt.Errorf("config validation failed")
 	}
+
+	// Record the config path (overwritten on every start) so CLI commands
+	// like `status`/`logs` can find this config from any directory.
+	config.RecordConfigPath(configPath)
 
 	// 4. Check environment
 	if errs := build.CheckEnvironment(); len(errs) > 0 {

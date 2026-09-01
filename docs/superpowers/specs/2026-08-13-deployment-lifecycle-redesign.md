@@ -64,7 +64,7 @@ webhook ──► 合并队列 ──► flock 部署锁 ──► orchestrator.
 |---|---|---|---|---|---|
 | `jvm` | `mvn`/`gradle`（shell） | jar | 拷 jar 到部署目录（**可选**） | 长驻 PID | Spring Boot、Quarkus、任何 `java -jar` |
 | `static` | `npm run build`（shell） | dist/build 静态文件 | 拷到 nginx 目录 + reload | **无每服务进程** | Vue/React/Angular/Svelte SPA、SSG |
-| `node` | `npm run build`（shell） | server bundle | prune devDeps（可选） | 长驻 PID | Next.js SSR、Nuxt SSR、Express、NestJS |
+| `node` | `npm run build`（shell） | server bundle | 拷 bundle 到 dest（可选，同 jvm） | 长驻 PID | Next.js SSR、Nuxt SSR、Express、NestJS |
 | `python` | `uv sync`/`pip install`（shell） | 源码即产物 | migrate（可选） | 长驻 PID（ASGI/WSGI） | FastAPI、Flask、Django |
 | `docker` | `docker build`（shell） | 镜像 | tag/push（可选） | 容器 | 任何容器化服务 |
 
@@ -125,7 +125,7 @@ func Deploy(...) {
 |---|---|
 | jvm | Build(mvn) ▸ Stage(拷jar) ▸ Stop(杀PID) ▸ Start(java -jar) |
 | static | Build(npm build) ▸ Stage(拷dist + nginx reload) —— 无 Stop/Start |
-| node | Build(npm build) ▸ Stage(prune) ▸ Stop(杀PID) ▸ Start(node server) |
+| node | Build(npm build) ▸ Stage(拷 bundle 到 dest，可选) ▸ Stop(杀PID) ▸ Start(node server) |
 | python | Build(uv sync) ▸ Stage(migrate) ▸ Stop(杀PID) ▸ Start(uvicorn) |
 | docker | Build(docker build) ▸ Stage(tag) ▸ Stop(docker stop) ▸ Start(docker run) |
 
@@ -166,10 +166,11 @@ CLI 与 webhook 统一 `registry.Get(svc.Type)`，现有 6 处 `switch svc.Type`
   type: jvm
   repo: { url: "git@gitee.com:.../xx.git", branch: main }
   workspace: /opt/app
+  timeout: "45m"   # 可选：fetch+build+stage 总超时(默认 30m，所有模型通用)
   build: { command: "mvn clean package -Dmaven.test.skip=true" }   # 通用：每个模型都是一条 shell 命令
 ```
 
-通用层仅：`name` / `type` / `repo` / `workspace` / `build`。`build.command` 通用（mvn/npm/uv/docker build 都是 shell 命令），**支持命令列表**（比 `&&` 更清晰，依次执行）：
+通用层仅：`name` / `type` / `repo` / `workspace` / `timeout`（可选，fetch+build+stage 总超时）/ `build`。`build.command` 通用（mvn/npm/uv/docker build 都是 shell 命令），**支持命令列表**（比 `&&` 更清晰，依次执行）：
 
 ```yaml
 build: { command: ["npm ci", "npm run build"] }                       # 列表形式
@@ -199,12 +200,14 @@ build: { command: "mvn clean package -Dmaven.test.skip=true" }        # 或单�
     nginx_reload: true
     health: "https://app.example.com/health"   # status 通过健康检查 URL 判定
 
-# node —— 长驻 Node 进程
+# node —— 长驻 Node 进程（源码即产物；可选 artifact/dest 归位，同 jvm）
 - name: web-ssr
   type: node
   build: { command: "npm run build" }
   deploy:
-    run: "node server.js"
+    # artifact: ".output"            # 可选：产物目录/glob。不填=源码即产物(原地启动)
+    # dest: "/opt/web-ssr-run"        # 可选：归位目录。填了才拷贝，run 也在该目录执行
+    run: "node .output/server.mjs"   # 纯启动，不含 nohup/&/pm2
     env: { NODE_ENV: production }
 
 # python —— 源码即产物，Stage 可含 migrate
@@ -228,7 +231,7 @@ build: { command: "mvn clean package -Dmaven.test.skip=true" }        # 或单�
     env: [...]
 ```
 
-**关于 `artifact`（针对用户关切）**：`artifact` 只被 `jvm`/`static` 需要（2/5），不是通用字段，故下沉到 `deploy:` 而非顶层。对 `jvm` 而言它**也是可选的**——不填则原地启动（`run` 里写 `target/xxx.jar` 的相对路径），填 `dest` 则 Stage 拷贝到该目录。`node`/`python`/`docker` 不需要 `artifact`。
+**关于 `artifact`（针对用户关切）**：`artifact` 被 `jvm`/`static`/`node` 需要（3/5），不是通用字段，故下沉到 `deploy:` 而非顶层。对 `jvm`/`node` 而言它**也是可选的**——不填则原地启动（`run` 里写产物相对路径），填 `dest` 则 Stage 拷贝到该目录、`run` 在 dest 执行。`python`/`docker` 不需要 `artifact`（源码即产物 / 镜像即产物）。
 
 **`run` 也不是通用字段**：`static`/`docker` 没有 `run`（static 无进程；docker 用 `image/container`）。故 `run` 同样在 `deploy:` 内，不顶层必填。这是**理念变更 #2**：旧设计把 `run.command` 当通用必填项，新设计按模型归属。
 
@@ -541,3 +544,18 @@ services:
 3. **命令缩写用短旗标** — 服务操作 `-s`(start)`-t`(stop/terminate)`-r`(restart)，置于 `svc` 命名空间下（见 6.2）。
 4. **`build.command` 升级为命令列表** — 支持列表形式，比 `&&` 清晰（见 5.1）。
 5. **`static` 的 status 用健康检查 URL** — `deploy.health` 配置 URL，HTTP 2xx/3xx = running（见 6.1）。`health` 对其他类型可选。
+
+## 15. 落地后修订（2026-08-22）
+
+重设计在 Ubuntu 22 服务器实测后的问题审计与第二轮修复（多服务 webhook 匹配、产物目录递归拷贝、
+日志时间戳、daemon 启动反馈、配置路径统一、fetch/build 超时、清理只保留本次产物、Linux JAVA_HOME
+探测），见 [2026-08-22-issue-audit-and-fixes.md](2026-08-22-issue-audit-and-fixes.md)。
+本文档未涉及的行为以该审计文档为准。
+
+### 15.1 2026-08-31 再次修订
+
+1. **`timeout` 重设计为服务级总预算**：原 `build.timeout`（在 `build:` 内、三阶段各自独立计时）
+   改为服务层 `timeout`（与 `build:` 同级），fetch+build+stage **共享一个总预算**（Deploy 起首单个
+   `context.WithTimeout`）。通用层（§5.1）新增 `timeout` 字段。见审计文档 D8/B6/B13。
+2. **`node` 增加 `artifact`/`dest`**：node 不再仅"源码即产物"，可选归位（同 jvm：拷 `.output` 到
+   dest、`run` 在 dest 执行，与下次构建互不干扰；不配则原地启动）。见审计文档 D5/B14，及上方 §3/§4.2/§5.2 的 node 行。

@@ -56,8 +56,8 @@ type dockerDeployConfig struct {
 func (p *Plugin) deployConfig(svc *config.ServiceConfig) dockerDeployConfig {
 	var dc dockerDeployConfig
 	if svc.Deploy.Kind != 0 { // zero node = no deploy: block
-		if err := svc.Deploy.Decode(&dc); err != nil {
-			fmt.Fprintf(p.output, "[docker] warning: failed to parse deploy config: %v\n", err)
+		if err := config.StrictDecodeDeploy(svc.Deploy, &dc); err != nil {
+			fmt.Fprintf(p.output, "[docker] warning: deploy 配置存在无法识别的字段(会被忽略,请检查是否用了其他模型的专属字段): %v\n", err)
 		}
 	}
 	return dc
@@ -75,7 +75,7 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if svc.Build.Command.Empty() {
 		return fmt.Errorf("build command is empty")
 	}
-	return build.ExecuteBuild(svc.Workspace, svc.Build.Command.String(), p.output)
+	return build.ExecuteBuild(ctx, svc.Workspace, svc.Build.Command.String(), p.output)
 }
 
 // Stage is a no-op: the image built by Build already lives in the local docker

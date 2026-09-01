@@ -35,7 +35,26 @@ func Validate(cfg *AppConfig) []error {
 		if svc.Build.Command.Empty() {
 			errs = append(errs, fmt.Errorf("%s: build.command is required", prefix))
 		}
+		if _, err := svc.TimeoutDuration(); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %v (e.g. \"45m\", \"90s\")", prefix, err))
+		}
 		// run.command 不再必填：已下沉为 deploy.run，由对应插件解析校验
+	}
+
+	// A workspace is a per-service checkout/build dir. Sharing one between
+	// services would let their deploys (serialized by per-service locks, which
+	// don't see each other) clobber each other, so duplicates are rejected.
+	seenWorkspace := make(map[string]string) // workspace -> first service name
+	for i, svc := range cfg.Services {
+		if svc.Workspace == "" {
+			continue
+		}
+		if prev, dup := seenWorkspace[svc.Workspace]; dup {
+			errs = append(errs, fmt.Errorf("services[%d]: workspace %q is already used by service %q",
+				i, svc.Workspace, prev))
+		} else {
+			seenWorkspace[svc.Workspace] = svc.Name
+		}
 	}
 
 	// Validate notification config: need either SMTP or Resend

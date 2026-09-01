@@ -241,3 +241,29 @@ func TestValidate_SMTPNotRequiredWhenNoTo(t *testing.T) {
 		t.Fatalf("expected 0 errors, got %d: %v", len(errs), errs)
 	}
 }
+
+func TestValidate_DuplicateWorkspace(t *testing.T) {
+	svc := func(name, ws string) ServiceConfig {
+		return ServiceConfig{
+			Name:      name,
+			Type:      "jvm",
+			Repo:      RepoConfig{URL: "https://github.com/u/r.git", Branch: "main"},
+			Workspace: ws,
+			Build:     BuildConfig{Command: Command{"mvn package"}},
+		}
+	}
+	cfg := &AppConfig{
+		Services: []ServiceConfig{svc("a", "/tmp/ws"), svc("b", "/tmp/ws")},
+	}
+
+	errs := Validate(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "workspace") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected duplicate workspace error, got %v", errs)
+	}
+}

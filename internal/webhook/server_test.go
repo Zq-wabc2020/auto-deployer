@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/auto-deployer/auto-deployer/internal/config"
 )
 
 func TestHandle_GitHubPush(t *testing.T) {
@@ -150,5 +152,35 @@ func TestDetectSource_Gitee(t *testing.T) {
 	req.Header.Set("X-Gitee-Event", "Push Hook")
 	if detectSource(req) != "gitee" {
 		t.Error("expected gitee source")
+	}
+}
+
+func TestMatchServices_MultipleMatches(t *testing.T) {
+	services := []config.ServiceConfig{
+		{Name: "other", Repo: config.RepoConfig{URL: "git@github.com:u/other.git", Branch: "main"}},
+		{Name: "backend", Repo: config.RepoConfig{URL: "https://github.com/u/repo.git", Branch: "main"}},
+		{Name: "frontend", Repo: config.RepoConfig{URL: "git@github.com:u/repo.git", Branch: "main"}},
+		{Name: "wrong-branch", Repo: config.RepoConfig{URL: "git@github.com:u/repo.git", Branch: "dev"}},
+	}
+	result := &DispatchResult{RepoURL: "https://github.com/u/repo.git", Branch: "main"}
+
+	matched := MatchServices(services, result)
+	var names []string
+	for _, m := range matched {
+		names = append(names, m.Name)
+	}
+	if len(matched) != 2 || names[0] != "backend" || names[1] != "frontend" {
+		t.Errorf("expected [backend frontend], got %v", names)
+	}
+}
+
+func TestMatchServices_None(t *testing.T) {
+	services := []config.ServiceConfig{
+		{Name: "a", Repo: config.RepoConfig{URL: "git@github.com:u/other.git", Branch: "main"}},
+	}
+	result := &DispatchResult{RepoURL: "https://github.com/u/repo.git", Branch: "main"}
+
+	if matched := MatchServices(services, result); len(matched) != 0 {
+		t.Errorf("expected no match, got %d", len(matched))
 	}
 }

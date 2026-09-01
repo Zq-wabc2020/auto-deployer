@@ -86,44 +86,48 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matched := MatchService(cfg.Services, result)
-	if matched == nil {
+	matched := MatchServices(cfg.Services, result)
+	if len(matched) == 0 {
 		fmt.Printf("[webhook] no service matched for %s/%s\n", result.RepoURL, result.Branch)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 		return
 	}
 
-	result.ServiceName = matched.Name
-	fmt.Printf("[webhook] matched service: %s\n", result.ServiceName)
+	// Every matching service gets its own queue entry: the same repo+branch
+	// may feed multiple services (e.g. a jvm backend and a static frontend
+	// from one monorepo branch), and coalescing is per-service, so they
+	// deploy independently without merging into each other.
+	for _, m := range matched {
+		fmt.Printf("[webhook] matched service: %s\n", m.Name)
 
-	// Validate service type up front so a misconfigured service doesn't keep
-	// queuing undeployable tasks.
-	if _, err := registry.Get(matched.Type); err != nil {
-		fmt.Printf("[webhook] unknown service type: %s\n", matched.Type)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-		return
-	}
+		// Validate service type up front so a misconfigured service doesn't
+		// keep queuing undeployable tasks.
+		if _, err := registry.Get(m.Type); err != nil {
+			fmt.Printf("[webhook] unknown service type: %s\n", m.Type)
+			continue
+		}
 
-	// Submit to the per-service coalescing queue. The queue serializes same-
-	// service deploys and merges rapid triggers; ExecuteDeploy runs the pipeline.
-	task := deployqueue.Task{
-		ServiceName: matched.Name,
-		Branch:      result.Branch,
-		RepoURL:     result.RepoURL,
-		AuthorEmail: result.AuthorEmail,
-		Source:      source,
-	}
-	if scheduler != nil {
-		scheduler.Submit(task)
-		fmt.Printf("[webhook] %s deploy queued (pending: %d)\n", matched.Name, scheduler.Pending(matched.Name))
-	} else {
-		// Fallback when no scheduler is wired (e.g. tests): run directly.
-		go func() {
-			_ = ExecuteDeploy(context.Background(), task, []string{task.AuthorEmail})
-		}()
-		fmt.Printf("[webhook] %s deploy started (no queue)\n", matched.Name)
+		// Submit to the per-service coalescing queue. The queue serializes
+		// same-service deploys and merges rapid triggers; ExecuteDeploy runs
+		// the pipeline.
+		task := deployqueue.Task{
+			ServiceName: m.Name,
+			Branch:      result.Branch,
+			RepoURL:     result.RepoURL,
+			AuthorEmail: result.AuthorEmail,
+			Source:      source,
+		}
+		if scheduler != nil {
+			scheduler.Submit(task)
+			fmt.Printf("[webhook] %s deploy queued (pending: %d)\n", m.Name, scheduler.Pending(m.Name))
+		} else {
+			// Fallback when no scheduler is wired (e.g. tests): run directly.
+			go func(t deployqueue.Task) {
+				_ = ExecuteDeploy(context.Background(), t, []string{t.AuthorEmail})
+			}(task)
+			fmt.Printf("[webhook] %s deploy started (no queue)\n", m.Name)
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
@@ -173,18 +177,21 @@ func extractAuthorEmail(commits []GitHubCommit) string {
 	return commits[0].Committer.Email
 }
 
-// MatchService finds the first service whose repo URL and branch match the dispatch result.
-// It normalizes both URLs to SSH format for comparison.
-func MatchService(services []config.ServiceConfig, result *DispatchResult) *config.ServiceConfig {
+// MatchServices returns ALL services whose repo URL and branch match the
+// dispatch result, normalizing both URLs to SSH format for comparison. The
+// same repo+branch may legitimately feed several services (monorepo), and
+// each match deploys through its own per-service queue.
+func MatchServices(services []config.ServiceConfig, result *DispatchResult) []*config.ServiceConfig {
 	configURL := build.HTTPSToSSH(result.RepoURL)
+	var matched []*config.ServiceConfig
 	for i := range services {
 		svc := &services[i]
 		svcURL := build.HTTPSToSSH(svc.Repo.URL)
 		if svcURL == configURL && svc.Repo.Branch == result.Branch {
-			return svc
+			matched = append(matched, svc)
 		}
 	}
-	return nil
+	return matched
 }
 
 // readBody extracts the JSON payload from the request body.

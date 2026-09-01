@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/deploy"
 	"github.com/auto-deployer/auto-deployer/internal/process"
+	"github.com/auto-deployer/auto-deployer/internal/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -39,12 +42,25 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		for _, svc := range cfg.Services {
-			svcPIDFile := filepath.Join(home, ".deployd", "run", svc.Name+".pid")
-			svcMgr := process.NewManager(svcPIDFile)
-			fmt.Printf("  %-30s %s\n", svc.Name, svcMgr.Status())
+		for i := range cfg.Services {
+			fmt.Printf("  %-30s %s\n", cfg.Services[i].Name, serviceStatus(&cfg.Services[i]))
 		}
 
 		return nil
 	},
+}
+
+// serviceStatus reports a service's status through its deployment model --
+// pid file for process models, health URL for static, docker ps for docker.
+// Reading the pid file directly here would always show static as "stopped".
+func serviceStatus(svc *config.ServiceConfig) string {
+	d, err := registry.Get(svc.Type)
+	if err != nil {
+		return "unknown (" + err.Error() + ")"
+	}
+	st, err := deploy.GetServiceStatus(context.Background(), svc, d)
+	if err != nil {
+		return "unknown (" + err.Error() + ")"
+	}
+	return st
 }

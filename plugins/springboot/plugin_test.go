@@ -87,3 +87,38 @@ func TestStatus_ReturnsStoppedWhenNoPID(t *testing.T) {
 		t.Errorf("expected stopped, got %s", status)
 	}
 }
+
+func TestCleanWorkspace_KeepsOnlyStagedAndMeta(t *testing.T) {
+	ws := t.TempDir()
+	writeTestFile := func(rel string) {
+		if err := os.MkdirAll(filepath.Join(ws, filepath.Dir(rel)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ws, rel), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile("src/Main.java")
+	writeTestFile("target/app-2.0.jar")
+	writeTestFile("app-1.0.jar")   // old version jar: must be removed now
+	writeTestFile("app-2.0.jar")   // just staged: must survive
+	writeTestFile(".java-version") // must survive
+	if err := os.MkdirAll(filepath.Join(ws, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanWorkspace(ws, []string{"app-2.0.jar"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, keep := range []string{"app-2.0.jar", ".java-version", ".git"} {
+		if _, err := os.Stat(filepath.Join(ws, keep)); err != nil {
+			t.Errorf("%s should be kept: %v", keep, err)
+		}
+	}
+	for _, gone := range []string{"app-1.0.jar", "src/Main.java", "target/app-2.0.jar"} {
+		if _, err := os.Stat(filepath.Join(ws, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s should be removed", gone)
+		}
+	}
+}

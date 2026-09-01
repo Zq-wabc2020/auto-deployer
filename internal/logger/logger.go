@@ -6,7 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+// timeFormat is the timestamp prepended to every log line written via Printf.
+const timeFormat = "2006-01-02 15:04:05"
 
 // Logger wraps an io.Writer with service-specific prefix.
 type Logger struct {
@@ -14,9 +18,12 @@ type Logger struct {
 	prefix string
 }
 
-// Printf writes formatted output to the logger's writer.
+// Printf writes formatted output to the logger's writer, prefixed with the
+// service name and a timestamp. Raw subprocess output (piped through Write or
+// Fprintln) is passed through unmodified -- only tool-generated lines carry
+// timestamps.
 func (l *Logger) Printf(format string, args ...interface{}) {
-	msg := fmt.Sprintf(l.prefix+format+"\n", args...)
+	msg := fmt.Sprintf(l.prefix+time.Now().Format(timeFormat)+" "+format+"\n", args...)
 	_, _ = l.writer.Write([]byte(msg))
 }
 

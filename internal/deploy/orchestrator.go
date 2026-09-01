@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -45,6 +46,22 @@ type DeployResult struct {
 	Error       string
 }
 
+// defaultDeployTimeout is the total budget for fetch + build + stage when
+// timeout is not configured. A hung git/mvn would otherwise hold the deploy
+// lock forever.
+const defaultDeployTimeout = 30 * time.Minute
+
+// deployTimeout returns the configured service-level timeout (a single total
+// budget shared by fetch + build + stage), or the default. An invalid value
+// was already rejected by config validation; fall back to the default rather
+// than failing the deploy here.
+func deployTimeout(svc *config.ServiceConfig) time.Duration {
+	if d, err := svc.TimeoutDuration(); err == nil && d > 0 {
+		return d
+	}
+	return defaultDeployTimeout
+}
+
 // Deploy executes the full deployment pipeline:
 // fetch -> getAuthorEmail -> plugin.Build -> plugin.Stage -> plugin.Stop? -> plugin.Start? -> notify
 func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfig, deployer Deployer, operatorEmails []string) (*DeployResult, error) {
@@ -71,13 +88,22 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	}
 
 	log.Printf("fetching %s to %s...", svc.Repo.URL, svc.Workspace)
-	if err := build.Fetch(svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace, log); err != nil {
+
+	// One total budget spanning fetch + build + stage (not three independent
+	// per-stage timeouts). Stop/Start run on the parent ctx -- they are quick
+	// and only reached after stage succeeds.
+	deployCtx, cancelDeploy := context.WithTimeout(ctx, deployTimeout(svc))
+	defer cancelDeploy()
+
+	fetchStart := time.Now()
+	if err := build.Fetch(deployCtx, svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace, log); err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("fetch failed: %v", err)
 		sendNotify(ctx, cfg, svc, log, recipients, "", commitInfo, "fetch", "failed", err.Error())
 		return result, err
 	}
+	log.Printf("fetch done in %s", time.Since(fetchStart).Round(time.Millisecond))
 
 	// 2. Get author email from latest commit (used for the notification body and
 	// as the recipient fallback for direct manual triggers).
@@ -89,24 +115,28 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 
 	// 3. Build
 	log.Printf("building %s...", svc.Name)
-	if err := deployer.Build(ctx, svc); err != nil {
+	buildStart := time.Now()
+	if err := deployer.Build(deployCtx, svc); err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("build failed: %v", err)
 		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "build", "failed", err.Error())
 		return result, err
 	}
+	log.Printf("build done in %s", time.Since(buildStart).Round(time.Millisecond))
 
 	// 4. Stage (deploy-only preparation: artifact placement, migrate, etc.).
 	// Skipped on restart -- this is what keeps Start a pure launch.
 	log.Printf("staging %s...", svc.Name)
-	if err := deployer.Stage(ctx, svc); err != nil {
+	stageStart := time.Now()
+	if err := deployer.Stage(deployCtx, svc); err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
 		log.Printf("stage failed: %v", err)
 		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "stage", "failed", err.Error())
 		return result, err
 	}
+	log.Printf("stage done in %s", time.Since(stageStart).Round(time.Millisecond))
 
 	// 5. Stop old instance (only if the model manages a process)
 	if s, ok := deployer.(Stoppable); ok {

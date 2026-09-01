@@ -115,7 +115,9 @@ deployd stop
 
 #### 配置文件优先级
 
-`-c` 标志 > 当前目录 `config.yaml` > `~/.deployd/config.yaml`
+`-c` 标志 > 当前目录 `config.yaml` > `~/.deployd/config.yaml` > daemon 上次启动用的配置（记录在 `~/.deployd/config.path`，每次 `deployd start` 覆盖写）> `~/config.yaml`（旧默认，兼容保留）
+
+> daemon 与所有 CLI 命令共用同一套解析顺序，不会出现"daemon 读 A、status 读 B"。只要用 `deployd start` 启动过，在任何目录执行 `status`/`logs` 都能找到配置。
 
 ## Webhook URL 配置
 
@@ -163,6 +165,7 @@ cp config.yaml.example config.yaml   # 模板内含全部五种模型的带注�
 | `services[].repo.url` / `.branch` | Git 仓库地址（HTTPS 自动转 SSH）/ 分支 | `"main"` |
 | `services[].workspace` | 代码克隆和工作目录 | `"/opt/deployd/apps/my-app"` |
 | `services[].build.command` | 构建命令，支持单条字符串或命令列表 | `"mvn package -DskipTests"` |
+| `services[].timeout` | fetch + build + stage 的**总超时**（三阶段共享一个计时，非每阶段各 30m；Go duration 语法），默认 `30m` | `"45m"` |
 
 ### 各模型 `deploy:` 策略配置
 
@@ -176,24 +179,37 @@ deploy:
   env: { JAVA_OPTS: "-Xms100m" }           # 可选：运行时环境变量
 ```
 
-> workspace 里有 `.java-version` 时自动选用对应 JDK（支持 jenv / macOS java_home）。
+> workspace 里有 `.java-version` 时自动选用对应 JDK（探测顺序：jenv -> macOS java_home -> `/usr/lib/jvm/*` 扫描，Linux 无 jenv 也可用）。
 
 **static**（Vue/React SPA、SSG，无独立进程）
 
 ```yaml
 deploy:
-  artifact: "dist/*"                        # 构建产物
-  dest: "/usr/share/nginx/html/app"         # 拷贝到 nginx 目录
-  nginx_reload: true                        # 拷贝后执行 nginx -s reload
-  health: "https://app.example.com/health"  # status 通过健康检查 URL 判定
+  artifact: "dist"                         # 构建产物（目录或 glob，见下）
+  dest: "/usr/share/nginx/html/app"        # 拷贝到 nginx 目录
+  nginx_reload: true                       # 拷贝后执行 nginx -s reload
+  health: "https://app.example.com/health" # status 通过健康检查 URL 判定
 ```
 
-**node**（Next.js SSR / Express 等常驻进程）
+**artifact 语义**（jvm/static/node 通用，嵌套目录会递归拷贝）：
+
+| 写法 | 行为 |
+|------|------|
+| `dist` / `dist/` | 目录**内容**整体拷贝到 dest 根（static 前端推荐） |
+| `dist/*` | 每个匹配项拷到 dest 根：文件平铺，子目录保持 `dest/<目录名>/` |
+| `target/*.jar` | 文件 glob（jvm 常规用法），自动跳过 `*.original.jar` |
+
+> 不支持 `**`（Go 标准库无 doublestar 语义）。
+
+**node**（Next.js SSR / Express 等常驻进程；源码即产物，也可归位）
 
 ```yaml
 deploy:
-  run: "node server.js"
+  run: "node server.js"            # 源码即产物(默认)：不配 artifact，在 workspace 启动
   env: { NODE_ENV: "production" }
+  # 归位模式(可选)：把构建产物拷到 dest，run 在 dest 执行，与下次构建互不干扰
+  # artifact: ".output"          # 产物目录/glob(如 Nuxt 的 .output)，语义同 jvm/static
+  # dest: "/opt/app-run"           # 填了才拷贝；workspace 不清理，保留 node_modules 做增量构建
 ```
 
 **python**（FastAPI/Flask/Django，源码即产物）
@@ -223,6 +239,8 @@ deploy:
 ### 命令执行注意事项
 
 - **命令经 `sh -c` 执行**，`&&`、`||`、`|`、`>`、`$VAR` 等 shell 语义均可使用
+- **命令环境继承自 daemon 启动者**（非登录非交互 shell，不加载 `~/.bash_profile`）：谁启动 `deployd`，构建环境就是谁的。需要自定义函数/别名时在命令列表里显式加载：`[". ~/.bash_profile", "your_func ..."]`（用 `.` 而非 `source`，后者在 Ubuntu 的 dash 下不可用）
+- **fetch/build/stage 有超时保护**：`timeout` 是三阶段**总超时**（共享一个计时，默认 30m，非每阶段各 30m），任一阶段超时即杀整个进程组（不会留下 mvn 孤儿），部署失败会发邮件
 - **build** 支持三种写法；在 `workspace` 下执行：
 
 ```yaml
@@ -239,7 +257,7 @@ build:
   # command: "mvn clean package -Dmaven.test.skip=true && cp README.md target/"
 ```
 
-- **run 是纯启动命令**：不要写 `nohup`/`&`/重定向——后台化、PID 记录、停止都由 deployd 负责（记录真实进程 PID，`svc -t` 能准确杀掉）
+- **run 是纯启动命令**：不要写 `nohup`/`&`/重定向，**也不要用 pm2/supervisor 等自守护工具**（`pm2 start` 会 fork 自家守护进程后立刻退出，服务脱离 deployd 管理：status 失效、Stop 杀不到）。Nuxt 直接 `node .output/server.mjs` 即可--后台化、PID 记录、停止都由 deployd 负责（记录真实进程 PID，`svc -t` 能准确杀掉）
 - run 需要多步操作时，长驻命令必须放**最后一行**（shell 会 exec 替换，保证 PID 正确）；更推荐把准备动作放进 build：
 
 ```yaml

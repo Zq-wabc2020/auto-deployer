@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/notify"
@@ -145,7 +146,9 @@ func tailFollow(path string, tail int) error {
 		}
 		if err != nil {
 			if err == io.EOF {
-				err = nil
+				// At end of file: poll with a delay. Continuing without
+				// sleeping would busy-loop (100% CPU) on the EOF read.
+				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 			return err

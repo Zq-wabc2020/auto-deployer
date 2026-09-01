@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -350,11 +351,81 @@ func TestDefaultConfig_HomeDirFallback(t *testing.T) {
 
 func TestDefaultConfig_NotFound(t *testing.T) {
 	dir := t.TempDir()
+	oldHome, _ := os.UserHomeDir()
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", oldHome)
 	oldWd, _ := os.Getwd()
 	_ = os.Chdir(dir)
 	defer func() { _ = os.Chdir(oldWd) }()
 	path := DefaultConfig()
 	if path != "" {
 		t.Errorf("expected empty string when no config found, got %s", path)
+	}
+}
+
+func TestDefaultConfig_RecordedPathFallback(t *testing.T) {
+	home := t.TempDir()
+	oldHome, _ := os.UserHomeDir()
+	os.Setenv("HOME", home)
+	defer os.Setenv("HOME", oldHome)
+	oldWd, _ := os.Getwd()
+	_ = os.Chdir("/tmp")
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	// No config in cwd or ~/.deployd; the daemon-recorded path is used.
+	cfgDir := t.TempDir()
+	recorded := filepath.Join(cfgDir, "prod.yaml")
+	_ = os.WriteFile(recorded, []byte("server:\n  port: 9527\n"), 0644)
+	RecordConfigPath(recorded)
+
+	if got := DefaultConfig(); got != recorded {
+		t.Errorf("expected recorded path %s, got %s", recorded, got)
+	}
+}
+
+func TestDefaultConfig_StaleRecordedPathIgnored(t *testing.T) {
+	home := t.TempDir()
+	oldHome, _ := os.UserHomeDir()
+	os.Setenv("HOME", home)
+	defer os.Setenv("HOME", oldHome)
+	oldWd, _ := os.Getwd()
+	_ = os.Chdir("/tmp")
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	_ = os.MkdirAll(filepath.Join(home, ".deployd"), 0755)
+	RecordConfigPath("/nonexistent/config.yaml")
+
+	if got := DefaultConfig(); got != "" {
+		t.Errorf("expected empty string for stale recorded path, got %s", got)
+	}
+}
+
+func TestServiceTimeoutDuration(t *testing.T) {
+	cases := []struct {
+		timeout string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"", 0, false},
+		{"45m", 45 * time.Minute, false},
+		{"90s", 90 * time.Second, false},
+		{"1h30m", 90 * time.Minute, false},
+		{"fast", 0, true},
+	}
+	for _, c := range cases {
+		s := ServiceConfig{Timeout: c.timeout}
+		got, err := s.TimeoutDuration()
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("timeout %q: expected error", c.timeout)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("timeout %q: %v", c.timeout, err)
+		}
+		if got != c.want {
+			t.Errorf("timeout %q: expected %s, got %s", c.timeout, c.want, got)
+		}
 	}
 }

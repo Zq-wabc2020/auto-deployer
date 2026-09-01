@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -51,7 +52,7 @@ func TestPull_UpdatesWorkingDir(t *testing.T) {
 	_ = runCmd(setupDir, "git", "push", bareDir, "main")
 
 	// Use Fetch (Jenkins-style)
-	err := Fetch(bareDir, "", "main", destDir, io.Discard)
+	err := Fetch(context.Background(), bareDir, "", "main", destDir, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestFetch_FastPathDiscardsLocalMods(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(destDir, "file.txt"), []byte("LOCALLY MODIFIED"), 0644)
 
 	// Fast path (existing repo, matching origin) -> reset --hard must discard it.
-	if err := Fetch(bareDir, "", "main", destDir, io.Discard); err != nil {
+	if err := Fetch(context.Background(), bareDir, "", "main", destDir, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(destDir, "file.txt"))

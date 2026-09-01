@@ -56,8 +56,8 @@ type pythonDeployConfig struct {
 func (p *Plugin) deployConfig(svc *config.ServiceConfig) pythonDeployConfig {
 	var dc pythonDeployConfig
 	if svc.Deploy.Kind != 0 { // zero node = no deploy: block
-		if err := svc.Deploy.Decode(&dc); err != nil {
-			fmt.Fprintf(p.output, "[python] warning: failed to parse deploy config: %v\n", err)
+		if err := config.StrictDecodeDeploy(svc.Deploy, &dc); err != nil {
+			fmt.Fprintf(p.output, "[python] warning: deploy 配置存在无法识别的字段(会被忽略,请检查是否用了其他模型的专属字段): %v\n", err)
 		}
 	}
 	return dc
@@ -74,7 +74,7 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if svc.Build.Command.Empty() {
 		return fmt.Errorf("build command is empty")
 	}
-	return build.ExecuteBuild(svc.Workspace, svc.Build.Command.String(), p.output)
+	return build.ExecuteBuild(ctx, svc.Workspace, svc.Build.Command.String(), p.output)
 }
 
 // Stage runs the deploy-only migrate command if configured. Skipped on
@@ -93,7 +93,10 @@ func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 		cmd.Env = build.MergeEnv(os.Environ(), dc.Env)
 	}
 	fmt.Fprintf(p.output, "[python] migrate: %s\n", dc.Migrate)
-	if err := cmd.Run(); err != nil {
+	if err := build.RunCommandCtx(ctx, cmd); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("migrate aborted: %w", ctx.Err())
+		}
 		return fmt.Errorf("migrate failed: %w", err)
 	}
 	fmt.Fprintln(p.output, "[python] migrate completed")

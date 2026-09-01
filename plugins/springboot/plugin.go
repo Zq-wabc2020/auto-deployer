@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -53,8 +51,8 @@ type jvmDeployConfig struct {
 func (p *Plugin) deployConfig(svc *config.ServiceConfig) jvmDeployConfig {
 	var dc jvmDeployConfig
 	if svc.Deploy.Kind != 0 { // zero node = no deploy: block
-		if err := svc.Deploy.Decode(&dc); err != nil {
-			fmt.Fprintf(p.output, "[springboot] warning: failed to parse deploy config: %v\n", err)
+		if err := config.StrictDecodeDeploy(svc.Deploy, &dc); err != nil {
+			fmt.Fprintf(p.output, "[springboot] warning: deploy 配置存在无法识别的字段(会被忽略,请检查是否用了其他模型的专属字段): %v\n", err)
 		}
 	}
 	return dc
@@ -71,7 +69,7 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 	if svc.Build.Command.Empty() {
 		return fmt.Errorf("build command is empty")
 	}
-	if err := build.ExecuteBuild(svc.Workspace, svc.Build.Command.String(), p.output); err != nil {
+	if err := build.ExecuteBuild(ctx, svc.Workspace, svc.Build.Command.String(), p.output); err != nil {
 		return err
 	}
 	fmt.Fprintln(p.output, "[springboot] build completed")
@@ -91,10 +89,11 @@ func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	if dest == "" {
 		dest = svc.Workspace // default: workspace root (preserves old moveJarToRoot behavior)
 	}
-	if err := build.CopyArtifact(svc.Workspace, dc.Artifact, dest, p.output); err != nil {
+	keep, err := build.CopyArtifact(svc.Workspace, dc.Artifact, dest, p.output)
+	if err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
-	if err := cleanWorkspace(svc.Workspace); err != nil {
+	if err := cleanWorkspace(svc.Workspace, keep); err != nil {
 		fmt.Fprintf(p.output, "[springboot] warning: failed to clean workspace: %v\n", err)
 	} else {
 		fmt.Fprintf(p.output, "[springboot] cleaned workspace (source code removed)\n")
@@ -120,8 +119,8 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	}
 
 	overrides := map[string]string{}
-	if javaVersion := detectJavaVersion(svc.Workspace); javaVersion != "" {
-		if javaHome := findJavaHome(javaVersion); javaHome != "" {
+	if javaVersion := build.DetectJavaVersion(svc.Workspace); javaVersion != "" {
+		if javaHome := build.FindJavaHome(javaVersion); javaHome != "" {
 			overrides["JAVA_HOME"] = javaHome
 			// NOTE: prepend javaHome/BIN (the JDK home itself is not on the
 			// executable path) so `java` resolves to the requested version
@@ -150,37 +149,22 @@ func (p *Plugin) Status(ctx context.Context, svc *config.ServiceConfig) (string,
 	return mgr.Status(), nil
 }
 
-// detectJavaVersion reads .java-version file from workspace.
-func detectJavaVersion(workspace string) string {
-	versionFile := filepath.Join(workspace, ".java-version")
-	data, err := os.ReadFile(versionFile)
-	if err != nil {
-		return ""
+// cleanWorkspace removes all workspace entries except the files just staged
+// (keep), .java-version and .git (.git is kept so the next deploy's Fetch can
+// take the fast path). Keeping only the actually-staged names -- instead of
+// every *.jar -- means old versioned jars no longer accumulate in the
+// workspace when dest is the workspace root.
+func cleanWorkspace(workspace string, keep []string) error {
+	keepSet := make(map[string]bool, len(keep)+2)
+	for _, name := range keep {
+		keepSet[name] = true
 	}
-	return strings.TrimSpace(string(data))
-}
-
-// findJavaHome finds the JDK home for a given version.
-// Tries jenv first, then system Java locations.
-func findJavaHome(version string) string {
-	if jenvPath, err := exec.Command("jenv", "prefix", version).Output(); err == nil {
-		return strings.TrimSpace(string(jenvPath))
-	}
-	if out, err := exec.Command("/usr/libexec/java_home", "-v", version).Output(); err == nil {
-		return strings.TrimSpace(string(out))
-	}
-	return ""
-}
-
-// cleanWorkspace removes all files except jar files, .java-version and .git
-// (.git is kept so the next deploy's Fetch can take the fast path).
-func cleanWorkspace(workspace string) error {
 	entries, err := os.ReadDir(workspace)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".jar") {
+		if keepSet[entry.Name()] {
 			continue
 		}
 		if entry.Name() == ".java-version" || entry.Name() == ".git" {
