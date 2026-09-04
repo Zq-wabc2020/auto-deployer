@@ -54,7 +54,7 @@
 | 4 | `deploy.health` 适用范围 | 仅 static | **全部 5 类型强制必填** | 配置校验 + 向导（见 §10） |
 | 5 | `timeout` 语义 | fetch+build+stage | fetch+build+stage+**就绪** | 行为变更（见 §10.3） |
 | 6 | svc start/restart 互斥 | 无锁 | TryAcquire（启动中/部署中报错） | 复用 deploylock（见 §5/§7） |
-| 7 | 中途取消 | 不支持 | sentinel 文件 + orchestrator 自取消 | 新命令 `svc <name> -x`（见 §7） |
+| 7 | 中途取消 | 不支持 | sentinel 文件 + orchestrator 自取消 | 新命令 `deployd cancel <name>`（见 §7） |
 | 8 | 终端颜色 | 无 | ANSI 4 色，非 TTY 去色 | 自带辅助，无新依赖（见 §8） |
 | 9 | `artifact` 形态 | 单字符串 | 字符串**或列表** | 多文件拷贝（见 §9） |
 
@@ -105,9 +105,10 @@
 ### 4.4 `start_failed` 粘性语义（用户决策 Q3-A）
 
 - **持久**：`.state=start_failed` 后，`status` 始终报红，**即使外部手动把服务拉起**（探测到 running）也不转绿——失败痕迹不被外部动作意外清除。
-- **清除时机**：下一次 deployd 管控的 `deploy`/`svc start`/`svc restart`（转 `starting` 再判定）**或** `svc stop`（转 `stopped`）。
-  - **关于 stop**：用户 Q3-A 原文只列 deploy/start/restart。本设计**把 stop 也列为清除动作**——显式停止一个失败服务后转 `stopped`（灰）是符合直觉的；stop 是「我知道它失败了、主动下线」的确认动作，不应继续卡红。**此为对 Q3-A 的细化解释，spec 评审时请确认；若你坚持 stop 不清，改为 stop 后仍报红直到 deploy/start/restart。**
-- 非.deployd. 管控的外部动作（手动 `java -jar`、外部 `docker run`、pm2 等）**不**清除 `.state`。
+- **清除时机**：下一次 deployd 管控的 `deploy`/`svc start`/`svc restart`（转 `starting` 再判定）**或** `svc stop`（转 `stopped` 灰）。
+  - **stop 也清除**（用户决议 #1，§15.1）：显式停止一个失败服务后转 `stopped`（灰）符合直觉；stop 是「我知道它失败了、主动下线」的确认动作，不应继续卡红。
+  - **转绿（running）的唯一路径**（用户决议 #5，§15.5）：失败后，经 deployd 管控的 `deploy`/`svc start`/`svc restart`/webhook 重新启动**且 health 成功** → 清除 → running（绿）。新操作仍失败则继续红。
+- 非.deployd. 管控的外部动作（手动 `java -jar`、外部 `docker run`、pm2 等）**不**清除 `.state`（粘性，Q3-A）。
 
 ### 4.5 陈旧 `starting` 恢复
 
@@ -147,9 +148,10 @@
 | webhook（队列） | `Acquire`（阻塞） | 排队等（合并语义不变） |
 | `svc <name> -s`/`-r`（start/restart） | `TryAcquire` | 「服务 X 正在启动/部署中，请勿重复操作」 |
 | `svc <name> -t`（stop） | **不获取** | 停止无需互斥（停止一个死/活进程安全） |
-| `svc <name> -x`（cancel） | **不获取** | 仅写 sentinel（见 §7） |
+| `deployd cancel <name>` | **不获取** | 仅写 sentinel（见 §7） |
 
 - 生命周期不变：进程退出（正常/崩溃/被 kill）→ fd 关闭 → flock 自动释放；Linux fork 子进程经 `ExtraFiles` 继承 fd，`ReleaseInherited` 处理（既有机制）。
+- **`svc start/restart` 非阻塞**（用户决议 #2，§15.2）：Linux 下像 `deploy` 一样 **fork 到后台**（setsid + 锁 fd 继承 + `--no-fork/--locked`，复用 `forkDeploy` 模式）。父进程 TryAcquire 成功后立即返回「已在后台启动，用 `deployd status` 查看」，**不阻塞终端**。子进程：写 `.state=starting` → `Start` → 就绪轮询 → health 通过才清 `.state`（实时探测→running 绿）；失败写 `start_failed`。macOS / `--no-fork` 前台（同 deploy）。
 - **不引入新锁**，避免 deploy lock + start lock 交叉等待的死锁。
 
 ### 5.3 `status`/`svc <name>` 实现路径
@@ -167,7 +169,7 @@
 
 ### 6.1 机制（非忙循环）
 
-`Start` 成功后（static 在 `Stage` 后）进入就绪阶段，跑在 `deployCtx`（即 `timeout` 总预算的 ctx）下：
+`Start` 成功后（static 在 `Stage` 后）进入就绪阶段，跑在 `deployCtx`（即 `timeout` 总预算的 ctx）下。**这是状态由 `starting`→`running` 的唯一闸门**：health 不通过就不清 `.state`，`status` 持续显蓝；只有 health 通过才清 `.state` 让实时探测转绿。对 `deploy`（fork 子进程）与 `svc start/restart`（同样 fork 后台，§5.2）均跑在后台子进程内，不阻塞终端：
 
 ```
 deadlineCtx, deadlineCancel := WithTimeout(ctx, svc.timeout)   // 既有 30m 预算
@@ -230,7 +232,7 @@ for {
 
 跨进程通用（daemon 内 / fork 子进程 / 前台 CLI），无需 IPC：
 
-- 取消命令 `deployd svc <name> -x` 仅做：检查 deploylock 是否被持有（`IsHeld`）；未持有 → 打印「服务未在部署/启动中，无需取消」并退出；已持有 → 写 sentinel 文件 `~/.deployd/run/<name>.cancel`（空文件），打印「已发出取消信号」，退出。
+- 取消命令 `deployd cancel <name>` 仅做：检查 deploylock 是否被持有（`IsHeld`）；未持有 → 打印「服务未在部署/启动中，无需取消」并退出；已持有 → 写 sentinel 文件 `~/.deployd/run/<name>.cancel`（空文件），打印「已发出取消信号」，退出。
 - orchestrator（在 deploy/start 进程内）入口起一个 `sentinelWatcher` goroutine：每 ~1s 探测 `<name>.cancel` 是否存在；存在则调 `manualCancel()`（取消 `deployCtx`）→ 并**删除** sentinel（防下一次部署误触发）。
 - ctx 取消后：
   - build/stage：`RunCommandCtx` 的 `ctx.Done()` 触发 → 杀整组 → 阶段返回 ctx 错误。
@@ -254,9 +256,9 @@ for {
 
 ### 7.3 命令与跨进程
 
-- 命令：`deployd svc <name> -x`（与 `-s/-t/-r` 同命名空间；`x`=cross/abort）。
-- 同时支持前台进程的 Ctrl-C（SIGINT）：orchestrator 捕获 SIGINT → 同 `manualCancel()`（与 sentinel 等价）。fork 子进程 / daemon 内部署同理（信号作用于部署进程的进程组）。
-- 跨进程有效：sentinel 是文件，任何 CLI 进程都能写；部署进程（无论 daemon/fork/前台）都轮询它。无需 IPC。
+- 命令：`deployd cancel <name>`（顶层，与 `deploy` 同级——属部署控制动作，非服务态切换，故不进 `svc` 短旗标）。用途见 §1.1#3：取消该服务正在进行的部署/启动（`starting` 态）。实现：`IsHeld` 判定在途 → 写 `~/.deployd/run/<name>.cancel` sentinel → 打印「已发出取消信号」退出；未在途 → 提示「服务未在部署/启动中，无需取消」。
+- 同时支持前台进程的 Ctrl-C（SIGINT）：orchestrator 捕获 SIGINT → 同 `manualCancel()`（与 sentinel 等价）。对后台 fork 子进程（deploy/svc start 的 setsid 子进程）SIGINT 不直达，须用 `deployd cancel <name>`。
+- 跨进程有效：sentinel 是文件，任何 CLI 进程都能写；部署进程（daemon/fork 子进程/前台）都轮询它。无需 IPC。
 
 ### 7.4 边界
 
@@ -395,9 +397,9 @@ for {
 | 阶段 | 内容 | 验证 |
 |---|---|---|
 | P1 | `.state` 文件读写 + `GetServiceStatusRich` + 颜色 + `IsHeld` + 陈旧恢复 | `status` 四色显示；starting/failed 正确；非 TTY 去色 |
-| P2 | `svc start/restart` TryAcquire 锁 + 入口写 starting | 启动中再 start 报错；start 中 status 显蓝 |
+| P2 | `svc start/restart` TryAcquire 锁 + 入口写 starting + Linux fork 后台（复用 forkDeploy） | 启动中再 start 报错；start 中 status 显蓝；父进程立即返回 |
 | P3 | 就绪轮询（health 门控）+ `health` 全类型强制 + `health_interval` + timeout 语义扩展 | jvm/docker 启动即崩→start_failed；health 通过→running；就绪超时→start_failed+邮件 |
-| P4 | 取消 sentinel + watcher + `svc -x` + SIGINT + §7.2 半起处置 | 各阶段取消正确；不发邮件；半起新进程被 Stop |
+| P4 | 取消 sentinel + watcher + `deployd cancel <name>` + SIGINT + §7.2 半起处置 | 各阶段取消正确；不发邮件；半起新进程被 Stop |
 | P5 | `artifact` 列表 + `CopyArtifact` 汇总 + 向导/example/README | 两文件拷贝成功；单字符串不回归 |
 | P6 | daemon 侧 `Status` 走 `GetServiceStatusRich`（修 C2 残留） | static 在 daemon 侧不再永远 stopped |
 
@@ -413,8 +415,8 @@ for {
   2. docker 同上。
   3. static 部署 → health 通过绿；health 不通红。
   4. 部署中 `status` 显蓝；再次 `deploy`/`svc -s` 报「正在启动/部署中」。
-  5. `svc -x` 取消 build 中 / 就绪中的部署 → 中止、半起被 Stop、无邮件、status 灰/红正确。
-  6. Ctrl-C 前台 `svc start` → 同上。
+  5. `deployd cancel <name>` 取消 build 中 / 就绪中的部署 → 中止、半起被 Stop、无邮件、status 灰/红正确。
+  6. `--no-fork` 前台 `svc start` + Ctrl-C → 同上（Linux 后台 fork 的用 `cancel` 命令）。
   7. kill fork 子进程 → 锁释放、`.state=starting` 恢复为 start_failed。
   8. `artifact: ["hello1.txt","test.json"]` → 两文件拷到 dest。
   9. 非 TTY（`deployd status > file`）→ 无 ANSI。
@@ -422,12 +424,13 @@ for {
 
 ---
 
-## 15. 开放项（spec 评审确认）
+## 15. 决议（spec 评审已确认）
 
-1. **stop 是否清除 start_failed**（§4.4）：本设计建议 stop 也清除（转 stopped）。你 Q3-A 原文只列 deploy/start/restart。请确认。
-2. **`svc start/restart` 是否保持前台**（不 fork 到后台）：本设计保持前台（最小改动、可 Ctrl-C/`-x` 取消）。就绪轮询可能阻塞终端数十秒（health 通过即返回）。若要像 `deploy` 一样后台 fork，是独立增强，请示下。
-3. **`health_interval` 是否需要全局默认覆盖**：现为每服务 `deploy.health_interval`（默认 10s）。是否要一个全局默认（`config` 顶层）？建议不要（YAGNI，每服务足够）。
-4. **取消命令名 `-x`**：与 `-s/-t/-r` 同空间。可改 `deployd cancel <name>` 顶层。请示下。
+1. **stop 清除 start_failed → stopped（灰）**（§4.4）：确认。stop 是「主动下线」确认动作，转灰，不再卡红。
+2. **svc start/restart 非阻塞 + 状态管理**（§5.2）：确认。Linux 下像 `deploy` 一样 **fork 到后台**（复用 `forkDeploy` 模式：setsid + 锁 fd 继承 + `--no-fork/--locked`）；父进程立即返回「已在后台启动，用 `deployd status` 查看」，不阻塞终端。子进程：写 starting → Start → 就绪轮询 → **只有 health 通过才清 `.state`**（→ running 绿）；失败写 start_failed。macOS/`--no-fork` 前台（同 deploy）。
+3. **`health_interval` 仅每服务级**（§10.2）：确认。`deploy.health_interval` 默认 10s，每服务可配；**不**设 config 顶层全局默认（YAGNI）。
+4. **取消命令 = `deployd cancel <name>`**（§7.3）：顶层命令，与 `deploy` 同级。用途：取消该服务在途的部署/启动（`starting` 态），即用户诉求 #3。不进 `svc` 短旗标（控制动作，非服务态切换）。
+5. **start_failed 转绿条件**（§4.4）：失败后，经 deployd 管控的 `deploy`/`svc start`/`svc restart`/webhook 重新启动**且 health 成功** → 清除 → running（绿）；新操作仍失败则继续红。外部（非 deployd）拉起不影响（粘性，Q3-A）。
 
 ---
 
@@ -448,9 +451,10 @@ for {
 | `plugins/docker/plugin.go` | `Health` 改读 `svc.Health` |
 | `plugins/python/plugin.go` | `Health` 改读 `svc.Health` |
 | `cmd/status.go` | 走 `GetServiceStatusRich` + 颜色 |
-| `cmd/root.go` | `svc <name>` 无旗标走 `GetServiceStatusRich`+颜色；新增 `-x` 旗标→写 sentinel |
-| `cmd/service_start.go`/`service_restart.go` | TryAcquire 锁 + 写 starting + SIGINT 处理 |
-| `cmd/service_stop.go` | 清 `.state`（若 stop 清除 start_failed——见 §15.1） |
+| `cmd/root.go` | `svc <name>` 无旗标走 `GetServiceStatusRich`+颜色 |
+| `cmd/cancel.go`（新增） | `deployd cancel <name>`：`IsHeld` 判定 → 写 sentinel |
+| `cmd/service_start.go`/`service_restart.go` | Linux fork 到后台（复用 `forkDeploy` 模式 + `--no-fork/--locked`） + TryAcquire 锁 + 写 starting + 前台 SIGINT 处理 |
+| `cmd/service_stop.go` | 清 `.state`（stop 清除 start_failed → stopped） |
 | `internal/daemon/commands.go` | `Status` 走 `GetServiceStatusRich` |
 | `internal/term/color.go`（新增） | ANSI 辅助 + 非 TTY 检测 |
 | `config.yaml.example` / `README.md` | health 全类型、health_interval、timeout 含就绪、artifact 列表、颜色说明 |
