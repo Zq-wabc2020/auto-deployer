@@ -38,6 +38,14 @@ func Validate(cfg *AppConfig) []error {
 		if _, err := svc.TimeoutDuration(); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %v (e.g. \"45m\", \"90s\")", prefix, err))
 		}
+		// health 为通用必填字段（中心解析到 svc.HealthURL）：所有部署模型都需
+		// HTTP 健康检查 URL 供 orchestrator 就绪轮询与 status 判定。
+		if svc.HealthURL == "" {
+			errs = append(errs, fmt.Errorf("%s %s: 缺少 deploy.health（就绪判定必需，请配置 HTTP 健康检查 URL）", prefix, svc.Name))
+		}
+		if _, err := svc.HealthIntervalDuration(); err != nil {
+			errs = append(errs, fmt.Errorf("%s %s: %v", prefix, svc.Name, err))
+		}
 		// run.command 不再必填：已下沉为 deploy.run，由对应插件解析校验
 	}
 

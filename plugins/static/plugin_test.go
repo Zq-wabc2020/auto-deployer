@@ -71,7 +71,8 @@ func TestStatus_HealthURL(t *testing.T) {
 	defer srv.Close()
 
 	p := New()
-	svc := mustService(t, "deploy:\n  health: "+srv.URL+"\n")
+	// Health 改由中心层解析到 svc.HealthURL（不再从 deploy.health 读取）。
+	svc := &config.ServiceConfig{HealthURL: srv.URL}
 	st, err := p.Status(context.Background(), svc)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestStatus_HealthURL(t *testing.T) {
 
 func TestStatus_HealthDown(t *testing.T) {
 	p := New()
-	svc := mustService(t, "deploy:\n  health: \"http://127.0.0.1:1/health\"\n")
+	svc := &config.ServiceConfig{HealthURL: "http://127.0.0.1:1/health"}
 	st, _ := p.Status(context.Background(), svc)
 	if st != "stopped" {
 		t.Errorf("expected stopped, got %s", st)

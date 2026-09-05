@@ -400,6 +400,90 @@ func TestDefaultConfig_StaleRecordedPathIgnored(t *testing.T) {
 	}
 }
 
+// loadStr 写入临时文件后用 Load 加载，便于用完整 yaml 字符串驱动 Load 路径
+// （含 parseCommonDeployFields 等中心解析步骤）。
+func loadStr(t *testing.T, yamlStr string) *AppConfig {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlStr), 0644); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load temp config: %v", err)
+	}
+	return cfg
+}
+
+// yamlNode 把一段 yaml 字符串解析成 yaml.Node（取 DocumentNode 下的内容节点，
+// 形状与 svc.Deploy 一致：MappingNode 而非 DocumentNode）。
+func yamlNode(t *testing.T, yamlStr string) yaml.Node {
+	t.Helper()
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(yamlStr), &doc); err != nil {
+		t.Fatalf("unmarshal yaml node: %v", err)
+	}
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		return *doc.Content[0]
+	}
+	return doc
+}
+
+func TestParsesHealthFromDeploy(t *testing.T) {
+	cfg := loadStr(t, `
+services:
+  - name: s1
+    type: jvm
+    workspace: /tmp/s1
+    build: { command: "true" }
+    deploy:
+      run: "java -jar app.jar"
+      health: "http://localhost:8080/health"
+      health_interval: "3s"
+`)
+	s := cfg.Services[0]
+	if s.HealthURL != "http://localhost:8080/health" {
+		t.Fatalf("health url not parsed: %q", s.HealthURL)
+	}
+	if d, _ := s.HealthIntervalDuration(); d != 3*time.Second {
+		t.Fatalf("interval not parsed: %v", d)
+	}
+}
+
+func TestHealthIntervalDefault(t *testing.T) {
+	cfg := loadStr(t, `
+services:
+  - name: s1
+    type: jvm
+    workspace: /tmp/s1
+    build: { command: "true" }
+    deploy: { run: "x", health: "http://x/h" }
+`)
+	if d, _ := cfg.Services[0].HealthIntervalDuration(); d != 10*time.Second {
+		t.Fatalf("default interval want 10s got %v", d)
+	}
+}
+
+func TestStrictDecodeDeployIgnoresHealth(t *testing.T) {
+	// jvm deploy 块含 health（通用字段），StrictDecodeDeploy 不应报「未知字段」
+	node := yamlNode(t, `artifact: target/*.jar
+run: java -jar x.jar
+health: http://x/h
+health_interval: 5s
+`)
+	var dc struct {
+		Artifact string `yaml:"artifact"`
+		Run      string `yaml:"run"`
+	}
+	if err := StrictDecodeDeploy(node, &dc); err != nil {
+		t.Fatalf("health/health_interval 应被白名单忽略, got: %v", err)
+	}
+	if dc.Artifact != "target/*.jar" {
+		t.Fatalf("artifact not decoded: %q", dc.Artifact)
+	}
+}
+
 func TestServiceTimeoutDuration(t *testing.T) {
 	cases := []struct {
 		timeout string

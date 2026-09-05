@@ -15,6 +15,7 @@ func TestValidate_ValidConfig(t *testing.T) {
 				Repo:      RepoConfig{URL: "https://github.com/u/r.git", Branch: "main"},
 				Workspace: "/tmp/app",
 				Build:     BuildConfig{Command: Command{"mvn package"}},
+				HealthURL: "http://localhost:8080/health",
 			},
 		},
 	}
@@ -166,6 +167,7 @@ func TestValidate_BuildCommandList(t *testing.T) {
 			Repo:      RepoConfig{URL: "https://github.com/u/r.git", Branch: "main"},
 			Workspace: "/tmp/app",
 			Build:     BuildConfig{Command: Command{"npm ci", "npm run build"}},
+			HealthURL: "http://localhost:8080/health",
 		}},
 	}
 	errs := Validate(cfg)
@@ -203,7 +205,7 @@ func TestValidate_MultipleServices(t *testing.T) {
 func TestValidate_SMTPMissing(t *testing.T) {
 	cfg := &AppConfig{
 		Server:   ServerConfig{Host: "0.0.0.0", Port: 9527},
-		Services: []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}}},
+		Services: []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}, HealthURL: "http://localhost:8080/health"}},
 		Notifications: NotificationConfig{To: []string{"a@b.com"}},
 		SMTP:       SMTPConfig{}, // empty
 	}
@@ -219,7 +221,7 @@ func TestValidate_SMTPMissing(t *testing.T) {
 func TestValidate_SMTPComplete(t *testing.T) {
 	cfg := &AppConfig{
 		Server:   ServerConfig{Host: "0.0.0.0", Port: 9527},
-		Services: []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}}},
+		Services: []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}, HealthURL: "http://localhost:8080/health"}},
 		Notifications: NotificationConfig{To: []string{"a@b.com"}},
 		SMTP:       SMTPConfig{Host: "smtp.qq.com", Port: 465, Username: "x@qq.com", Token: "abc"},
 	}
@@ -232,13 +234,34 @@ func TestValidate_SMTPComplete(t *testing.T) {
 func TestValidate_SMTPNotRequiredWhenNoTo(t *testing.T) {
 	cfg := &AppConfig{
 		Server:        ServerConfig{Host: "0.0.0.0", Port: 9527},
-		Services:      []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}}},
+		Services:      []ServiceConfig{{Name: "test", Type: "jvm", Repo: RepoConfig{URL: "https://github.com/x/x.git", Branch: "main"}, Workspace: "/tmp", Build: BuildConfig{Command: Command{"true"}}, HealthURL: "http://localhost:8080/health"}},
 		Notifications: NotificationConfig{To: nil},
 		SMTP:          SMTPConfig{}, // empty, but to is empty so OK
 	}
 	errs := Validate(cfg)
 	if len(errs) != 0 {
 		t.Fatalf("expected 0 errors, got %d: %v", len(errs), errs)
+	}
+}
+
+func TestValidateRequiresHealth(t *testing.T) {
+	cfg := loadStr(t, `
+services:
+  - name: s1
+    type: jvm
+    workspace: /tmp/s1
+    build: { command: "true" }
+    deploy: { run: "java -jar x" }   # 缺 health
+`)
+	errs := Validate(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "health") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("缺 deploy.health 应校验失败, got: %v", errs)
 	}
 }
 

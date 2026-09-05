@@ -49,7 +49,7 @@ type staticDeployConfig struct {
 	Artifact    string `yaml:"artifact"`     // required: built files glob, e.g. "dist/*"
 	Dest        string `yaml:"dest"`         // required: web server docroot
 	NginxReload bool   `yaml:"nginx_reload"` // run `nginx -s reload` after copy
-	Health      string `yaml:"health"`       // status check URL (HTTP < 400 = running)
+	// Health 字段已移除：改由中心层解析到 svc.HealthURL，Status 直接读取。
 }
 
 // deployConfig parses the service's deploy node into static-specific config.
@@ -97,9 +97,9 @@ func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 // Status probes the configured health URL: HTTP < 400 means running (the site
 // is being served); without a health URL the status is unknown.
 func (p *Plugin) Status(ctx context.Context, svc *config.ServiceConfig) (string, error) {
-	health := p.deployConfig(svc).Health
+	health := svc.HealthURL
 	if health == "" {
-		return "unknown", nil
+		return "unknown", nil // 不应发生（校验已拦），防御
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(health)

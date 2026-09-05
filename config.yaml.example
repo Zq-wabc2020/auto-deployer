@@ -45,6 +45,8 @@ services:
       # artifact: "target/*.jar"   # 可选：产物 glob。不填=原地启动(run 里写 target/xxx.jar 相对路径)
       # dest: "/opt/app"           # 可选：产物归位目录。填了才拷贝(替代旧 moveJarToRoot 行为)
       run: "java -jar target/app.jar"           # 纯启动命令，不要写 nohup/&（后台化由工具负责）
+      health: "http://localhost:8080/health"   # 必填：HTTP 健康检查 URL（就绪轮询/status 判定，所有模型通用）
+      # health_interval: "10s"                 # 可选：轮询间隔(默认 10s)
       # env:                        # 可选：运行时环境变量
       #   JAVA_OPTS: "-Xms100m -Xmx128m"
 

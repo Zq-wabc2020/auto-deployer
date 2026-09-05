@@ -104,6 +104,22 @@ type ServiceConfig struct {
 	// never filled by yaml.v3, silently dropping the deploy: block).
 	// Zero value (Kind==0) means "no deploy block configured".
 	Deploy yaml.Node `yaml:"deploy"`
+	// HealthURL/HealthInterval 从 deploy: 块中心解析（通用字段），供 orchestrator
+	// 就绪轮询与 static.Status 读取。不在 yaml 顶层，故无 yaml tag。
+	HealthURL      string `yaml:"-"`
+	HealthInterval string `yaml:"-"`
+}
+
+// HealthIntervalDuration 解析 deploy.health_interval，空=默认 10s。
+func (s ServiceConfig) HealthIntervalDuration() (time.Duration, error) {
+	if s.HealthInterval == "" {
+		return 10 * time.Second, nil
+	}
+	d, err := time.ParseDuration(s.HealthInterval)
+	if err != nil {
+		return 0, fmt.Errorf("invalid health_interval %q: %w", s.HealthInterval, err)
+	}
+	return d, nil
 }
 
 // TimeoutDuration parses the service-level timeout. Returns 0 when unset; a
@@ -140,7 +156,35 @@ func Load(path string) (*AppConfig, error) {
 	warnUnknownFields(data)
 	warnLegacyRunField(data)
 	warnLegacyBuildTimeout(data)
+	parseCommonDeployFields(&cfg)
 	return &cfg, nil
+}
+
+// parseCommonDeployFields 从每个服务的 deploy: 节点解出通用字段 health /
+// health_interval，存到 svc.HealthURL / svc.HealthInterval。插件无需各自持有这些字段。
+func parseCommonDeployFields(cfg *AppConfig) {
+	for i := range cfg.Services {
+		svc := &cfg.Services[i]
+		if svc.Deploy.Kind == 0 {
+			continue
+		}
+		var common struct {
+			Health          string `yaml:"health"`
+			HealthInterval string `yaml:"health_interval"`
+		}
+		_ = yaml.Unmarshal(encodeNode(svc.Deploy), &common) // 容错：失败则留空，校验会拦
+		svc.HealthURL = common.Health
+		svc.HealthInterval = common.HealthInterval
+	}
+}
+
+// encodeNode 把 yaml.Node 编码回字节（parseCommonDeployFields 与 StrictDecodeDeploy 复用）。
+func encodeNode(node yaml.Node) []byte {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	_ = enc.Encode(&node)
+	_ = enc.Close()
+	return buf.Bytes()
 }
 
 // warnUnknownFields re-decodes the config with strict field checking and warns
@@ -160,14 +204,21 @@ func warnUnknownFields(data []byte) {
 // checking, so a field valid for another model (e.g. artifact on a node
 // service) surfaces as an error instead of being silently dropped. Used by
 // plugins to warn about strategy-layer typos.
+//
+// 通用字段 health / health_interval 由中心层解析，不属于任何插件的策略结构体，
+// 在严格解码前先剥除，避免触发「未知字段」误报。
 func StrictDecodeDeploy(node yaml.Node, out interface{}) error {
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	if err := enc.Encode(&node); err != nil {
-		return err
+	data := encodeNode(node)
+	// 去除通用字段，避免插件结构体无这些字段时触发「未知字段」警告
+	var m map[string]interface{}
+	if err := yaml.Unmarshal(data, &m); err == nil {
+		delete(m, "health")
+		delete(m, "health_interval")
+		if b, err := yaml.Marshal(m); err == nil {
+			data = b
+		}
 	}
-	_ = enc.Close()
-	dec := yaml.NewDecoder(&buf)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	return dec.Decode(out)
 }
