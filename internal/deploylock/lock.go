@@ -70,6 +70,17 @@ func TryAcquire(serviceName string) (*Lock, error) {
 	return l, nil
 }
 
+// IsHeld 报告该服务的部署锁是否被持有。用 TryAcquire 探测：拿不到=EWOULDBLOCK=被持有；
+// 拿到则立即释放并返回 false。用于 status 显示 starting 时确认锁仍在、以及 cancel 命令判定在途。
+func IsHeld(serviceName string) bool {
+	l, err := TryAcquire(serviceName)
+	if err != nil {
+		return true // 被持有（或打开失败，保守视为忙）
+	}
+	l.Release()
+	return false
+}
+
 // Release unlocks and closes the lock file, releasing the lock. Used by the
 // process that holds the lock (webhook queue processor, foreground manual).
 func (l *Lock) Release() {

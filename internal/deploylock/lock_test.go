@@ -47,3 +47,20 @@ func TestTryAcquireDifferentServices(t *testing.T) {
 	}
 	lock2.Release()
 }
+
+// TestIsHeld verifies that IsHeld reports true while a lock is held and false
+// when no lock is held.
+func TestIsHeld(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if IsHeld("svc") {
+		t.Fatal("no lock held initially")
+	}
+	lock, err := Acquire("svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if !IsHeld("svc") {
+		t.Fatal("lock should be reported held")
+	}
+}

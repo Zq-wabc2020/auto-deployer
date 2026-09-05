@@ -151,6 +151,15 @@ func (m *Manager) Stop() error {
 	return fmt.Errorf("process %d did not exit after SIGKILL", pid)
 }
 
+// Alive 报告被管理进程（及其进程组）是否仍存活。供就绪轮询快速失败用。
+func (m *Manager) Alive() bool {
+	pid, err := m.ReadPID()
+	if err != nil || pid == 0 {
+		return false
+	}
+	return pidAlive(pid)
+}
+
 // signalPid sends sig to the process group of pid (our launched processes use
 // Setpgid, so pgid == pid), falling back to the bare pid for processes started
 // without a dedicated group (e.g. by older deployd binaries).

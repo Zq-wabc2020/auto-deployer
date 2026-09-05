@@ -185,3 +185,12 @@ func TestStopEscalatesToSigKILL(t *testing.T) {
 		t.Errorf("Stop took too long: %v", elapsed)
 	}
 }
+
+// TestAliveForMissingPidDirect verifies that Alive returns false when the
+// PID file does not exist.
+func TestAliveForMissingPidDirect(t *testing.T) {
+	m := NewManager(filepath.Join(t.TempDir(), "nope.pid"))
+	if m.Alive() {
+		t.Fatal("expected not alive")
+	}
+}
