@@ -128,16 +128,37 @@ func TestGetServiceStatusRichRunningFallbackToProbe(t *testing.T) {
 	}
 }
 
-// fakeDeployer 实现 Deployer，Status 可控。
+// TestGetServiceStatusRichStartFailedSticky 验证 §4.4 不变式：当 .state=start_failed 时，
+// 即便实时探测本应返回 running，也必须返回粘性的 start_failed，且根本不查探测。
+func TestGetServiceStatusRichStartFailedSticky(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = servstate.WriteFailed("s1")
+	d := &fakeDeployer{status: "running"}
+	got, err := GetServiceStatusRich(context.Background(), &config.ServiceConfig{Name: "s1"}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "start_failed") {
+		t.Fatalf("sticky start_failed must win over a running probe, got %q", got)
+	}
+	if d.probed {
+		t.Fatal("Status() must not be called when .state=start_failed (sticky)")
+	}
+}
+
+// fakeDeployer 实现 Deployer，Status 可控。probed 标记 Status 是否被调用过，
+// 供粘性不变式测试断言“start_failed 时不查实时探测”。
 type fakeDeployer struct {
 	status    string
+	probed    bool
 	startable bool
 	started   bool
 }
 
-func (f *fakeDeployer) Build(context.Context, *config.ServiceConfig) error  { return nil }
-func (f *fakeDeployer) Stage(context.Context, *config.ServiceConfig) error  { return nil }
+func (f *fakeDeployer) Build(context.Context, *config.ServiceConfig) error { return nil }
+func (f *fakeDeployer) Stage(context.Context, *config.ServiceConfig) error { return nil }
 func (f *fakeDeployer) Status(context.Context, *config.ServiceConfig) (string, error) {
+	f.probed = true
 	if f.status == "" {
 		return "stopped", nil
 	}
