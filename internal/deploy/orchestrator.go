@@ -9,8 +9,11 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/deploylock"
 	"github.com/auto-deployer/auto-deployer/internal/logger"
 	"github.com/auto-deployer/auto-deployer/internal/notify"
+	"github.com/auto-deployer/auto-deployer/internal/servstate"
+	"github.com/auto-deployer/auto-deployer/internal/term"
 )
 
 // Deployer is the universal lifecycle contract every deployment model implements.
@@ -193,6 +196,35 @@ func ServiceRestart(ctx context.Context, svc *config.ServiceConfig, deployer Dep
 // GetServiceStatus returns the status of a service.
 func GetServiceStatus(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) (string, error) {
 	return deployer.Status(ctx, svc)
+}
+
+// GetServiceStatusRich 按优先级返回（已上色）服务状态：
+//  1. .state=starting 且锁持有 → starting（部署仍在进行）
+//  2. .state=starting 且锁空 → 陈旧，就地重写为 start_failed
+//  3. .state=start_failed → start_failed（粘性，直到下次 deploy 成功清除）
+//  4. 无 .state → 插件实时探测
+//
+// 陈旧恢复（第 2 步）由读取方（status 查询）执行写操作，这是“只有部署进程写状态”
+// 的唯一例外：锁空意味着无部署在跑，不存在并发写入方，因此就地重写安全。
+func GetServiceStatusRich(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) (string, error) {
+	st, ok := servstate.Read(svc.Name)
+	if ok && st.Status == "starting" {
+		if deploylock.IsHeld(svc.Name) {
+			return term.Colorize("starting"), nil
+		}
+		// 陈旧：部署进程已死，就地重写为失败
+		_ = servstate.WriteFailed(svc.Name)
+		return term.Colorize("start_failed"), nil
+	}
+	if ok && st.Status == "start_failed" {
+		return term.Colorize("start_failed"), nil
+	}
+	// 无持久态 → 实时探测
+	raw, err := deployer.Status(ctx, svc)
+	if err != nil {
+		return term.Colorize("unknown"), err
+	}
+	return term.Colorize(raw), nil
 }
 
 func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, log *logger.Logger, recipients []string, authorEmail, commitInfo, stage, status, errMsg string) {

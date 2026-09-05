@@ -81,7 +81,7 @@ func runSvcShortFlags(cmd *cobra.Command, args []string) error {
 	case boolFlag(cmd, "restart"):
 		return deploy.ServiceRestart(ctx, svc, d)
 	default:
-		st, err := deploy.GetServiceStatus(ctx, svc, d)
+		st, err := deploy.GetServiceStatusRich(ctx, svc, d)
 		if err != nil {
 			return err
 		}

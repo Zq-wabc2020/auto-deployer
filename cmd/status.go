@@ -53,12 +53,13 @@ var statusCmd = &cobra.Command{
 // serviceStatus reports a service's status through its deployment model --
 // pid file for process models, health URL for static, docker ps for docker.
 // Reading the pid file directly here would always show static as "stopped".
+// 状态串已由 GetServiceStatusRich 上色（非 TTY 时为纯文本），此处直接打印。
 func serviceStatus(svc *config.ServiceConfig) string {
 	d, err := registry.Get(svc.Type)
 	if err != nil {
 		return "unknown (" + err.Error() + ")"
 	}
-	st, err := deploy.GetServiceStatus(context.Background(), svc, d)
+	st, err := deploy.GetServiceStatusRich(context.Background(), svc, d)
 	if err != nil {
 		return "unknown (" + err.Error() + ")"
 	}

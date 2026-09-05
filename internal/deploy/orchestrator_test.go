@@ -3,9 +3,12 @@ package deploy
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/deploylock"
+	"github.com/auto-deployer/auto-deployer/internal/servstate"
 )
 
 type mockDeployer struct {
@@ -87,3 +90,57 @@ func TestServiceRestart(t *testing.T) {
 		t.Error("expected Build NOT to be called")
 	}
 }
+
+func TestGetServiceStatusRichStarting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	svc := &config.ServiceConfig{Name: "s1", Type: "jvm"}
+	// 占锁 + 写 starting
+	lock, _ := deploylock.Acquire("s1")
+	defer lock.Release()
+	_ = servstate.WriteStarting("s1", "build")
+	got, _ := GetServiceStatusRich(context.Background(), svc, &fakeDeployer{})
+	if !strings.HasSuffix(got, "starting") && !strings.Contains(got, "starting") {
+		t.Fatalf("expected starting, got %q", got)
+	}
+}
+
+func TestGetServiceStatusRichStaleStartingBecomesFailed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = servstate.WriteStarting("s1", "build") // 但不持锁 → 陈旧
+	got, _ := GetServiceStatusRich(context.Background(), &config.ServiceConfig{Name: "s1"}, &fakeDeployer{})
+	if !strings.Contains(got, "start_failed") {
+		t.Fatalf("stale starting should recover to start_failed, got %q", got)
+	}
+	// 且应就地重写为 start_failed
+	st, _ := servstate.Read("s1")
+	if st.Status != "start_failed" {
+		t.Fatalf("stale should be rewritten to start_failed, got %q", st.Status)
+	}
+}
+
+func TestGetServiceStatusRichRunningFallbackToProbe(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// 无 .state → 走插件 Status
+	d := &fakeDeployer{status: "running"}
+	got, _ := GetServiceStatusRich(context.Background(), &config.ServiceConfig{Name: "s1"}, d)
+	if !strings.Contains(got, "running") {
+		t.Fatalf("expected running from probe, got %q", got)
+	}
+}
+
+// fakeDeployer 实现 Deployer，Status 可控。
+type fakeDeployer struct {
+	status    string
+	startable bool
+	started   bool
+}
+
+func (f *fakeDeployer) Build(context.Context, *config.ServiceConfig) error  { return nil }
+func (f *fakeDeployer) Stage(context.Context, *config.ServiceConfig) error  { return nil }
+func (f *fakeDeployer) Status(context.Context, *config.ServiceConfig) (string, error) {
+	if f.status == "" {
+		return "stopped", nil
+	}
+	return f.status, nil
+}
+func (f *fakeDeployer) SetOutput(io.Writer) {}
