@@ -241,13 +241,19 @@ func readinessGate(ctx context.Context, svc *config.ServiceConfig, deployer Depl
 				return fmt.Errorf("服务进程启动后立即退出（%s）", svc.Name)
 			}
 		}
-		if resp, err := client.Get(svc.HealthURL); err == nil {
-			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		// 用 ctx 构造请求：取消可即时中断在飞的健康探测，不必等 3s client.Timeout。
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, svc.HealthURL, nil)
+		if err == nil {
+			resp, err := client.Do(req)
+			if err == nil {
+				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+					resp.Body.Close()
+					log.Printf("health check passed: %s", svc.HealthURL)
+					return nil
+				}
 				resp.Body.Close()
-				log.Printf("health check passed: %s", svc.HealthURL)
-				return nil
 			}
-			resp.Body.Close()
+			// err != nil 或非 2xx/3xx → 视为未就绪，进入 select 等待
 		}
 		select {
 		case <-ticker.C:
