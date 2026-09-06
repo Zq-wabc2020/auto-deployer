@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -65,8 +66,25 @@ func deployTimeout(svc *config.ServiceConfig) time.Duration {
 	return defaultDeployTimeout
 }
 
+// withDeployCtx layers a manual cancel on top of the deploy timeout budget:
+// WithCancel(WithTimeout(parent, timeout)). The returned CancelFunc cancels
+// both, so either the deadline (fetch+build+stage+readiness 超时) or a manual
+// cancel (T8 的取消 sentinel) aborts the whole pipeline. ServiceStart (T7) 复用。
+func withDeployCtx(parent context.Context, svc *config.ServiceConfig) (context.Context, context.CancelFunc) {
+	deadlineCtx, cancelDeadline := context.WithTimeout(parent, deployTimeout(svc))
+	deployCtx, manualCancel := context.WithCancel(deadlineCtx)
+	return deployCtx, func() {
+		manualCancel()
+		cancelDeadline()
+	}
+}
+
 // Deploy executes the full deployment pipeline:
-// fetch -> getAuthorEmail -> plugin.Build -> plugin.Stage -> plugin.Stop? -> plugin.Start? -> notify
+// fetch -> getAuthorEmail -> Build -> Stage -> Stop? -> Start? -> readinessGate? -> notify
+//
+// 整条 fetch/build/stage/Start/readiness 链跑在 deployCtx 下（WithCancel(WithTimeout)）：
+// 既受总超时预算约束，又可被手动取消层中断（T8 取消 sentinel）。失败/取消经 handleErr
+// 统一处置；成功则清 .state 并发 success 邮件。
 func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfig, deployer Deployer, operatorEmails []string) (*DeployResult, error) {
 	result := &DeployResult{ServiceName: svc.Name}
 
@@ -79,9 +97,12 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	// the queue for webhooks). For a direct manual trigger (none provided) the
 	// fetched commit author is used as the recipient (set after fetch below).
 	recipients := operatorEmails
-	commitInfo := ""
+	// 先声明：handleErr 闭包需捕获，但二者在 fetch 后才赋值（fetch 失败时留空，
+	// 邮件 recipient 回退到 operatorEmails/notifications.to）。
+	var authorEmail string
+	var commitInfo string
 
-	// 1. Fetch fresh code
+	// 1. Ensure SSH key (pre-deploy setup; 不在 deployCtx 超时预算内)。
 	keyFile, _, _, err := build.EnsureSSHKey()
 	if err != nil {
 		result.Status = "failed"
@@ -90,80 +111,141 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		return result, fmt.Errorf(result.Error)
 	}
 
-	log.Printf("fetching %s to %s...", svc.Repo.URL, svc.Workspace)
-
-	// One total budget spanning fetch + build + stage (not three independent
-	// per-stage timeouts). Stop/Start run on the parent ctx -- they are quick
-	// and only reached after stage succeeds.
-	deployCtx, cancelDeploy := context.WithTimeout(ctx, deployTimeout(svc))
+	// ctx 重构：timeout 总预算（fetch+build+stage+就绪）+ 手动取消层（T8 sentinel）。
+	deployCtx, cancelDeploy := withDeployCtx(ctx, svc)
 	defer cancelDeploy()
 
+	// 清残留取消 sentinel（T8 接线 watcher；此处仅清旧文件，不阻塞）。
+	_ = servstate.ClearCancel(svc.Name)
+
+	// 写 starting 状态（每阶段刷新子阶段，供 status 查询展示当前进度）。
+	setStage := func(s string) { _ = servstate.WriteStarting(svc.Name, s) }
+	setStage("fetch")
+
+	// started 标记 Start 是否已执行，供 handleErr 决定是否停半起服务。
+	started := false
+
+	// handleErr 统一处置失败/取消：区分手动取消（Canceled）与其余（含 DeadlineExceeded 超时）。
+	handleErr := func(stage string, e error) (*DeployResult, error) {
+		if deployCtx.Err() == context.Canceled {
+			// 手动取消：不发邮件，停半起服务，清 state。
+			if started {
+				if s, ok := deployer.(Stoppable); ok {
+					_ = s.Stop(ctx, svc)
+				}
+			}
+			_ = servstate.Clear(svc.Name)
+			result.Status = "cancelled"
+			log.Printf("deploy cancelled at %s", stage)
+			return result, fmt.Errorf("deploy cancelled: %s", stage)
+		}
+		// 失败（含超时）：停半起服务 + start_failed + 邮件。
+		if started {
+			if s, ok := deployer.(Stoppable); ok {
+				_ = s.Stop(ctx, svc)
+			}
+		}
+		_ = servstate.WriteFailed(svc.Name)
+		result.Status = "failed"
+		result.Error = e.Error()
+		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, stage, "failed", e.Error())
+		return result, e
+	}
+
+	log.Printf("fetching %s to %s...", svc.Repo.URL, svc.Workspace)
 	fetchStart := time.Now()
 	if err := build.Fetch(deployCtx, svc.Repo.URL, keyFile, svc.Repo.Branch, svc.Workspace, log); err != nil {
-		result.Status = "failed"
-		result.Error = err.Error()
-		log.Printf("fetch failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, "", commitInfo, "fetch", "failed", err.Error())
-		return result, err
+		return handleErr("fetch", err)
 	}
 	log.Printf("fetch done in %s", time.Since(fetchStart).Round(time.Millisecond))
 
 	// 2. Get author email from latest commit (used for the notification body and
 	// as the recipient fallback for direct manual triggers).
-	authorEmail := build.GetLatestAuthorEmail(svc.Workspace, svc.Repo.Branch)
+	authorEmail = build.GetLatestAuthorEmail(svc.Workspace, svc.Repo.Branch)
 	commitInfo = build.GetLatestCommit(svc.Workspace, svc.Repo.Branch)
 	if len(recipients) == 0 {
 		recipients = []string{authorEmail}
 	}
 
 	// 3. Build
+	setStage("build")
 	log.Printf("building %s...", svc.Name)
 	buildStart := time.Now()
 	if err := deployer.Build(deployCtx, svc); err != nil {
-		result.Status = "failed"
-		result.Error = err.Error()
-		log.Printf("build failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "build", "failed", err.Error())
-		return result, err
+		return handleErr("build", err)
 	}
 	log.Printf("build done in %s", time.Since(buildStart).Round(time.Millisecond))
 
 	// 4. Stage (deploy-only preparation: artifact placement, migrate, etc.).
 	// Skipped on restart -- this is what keeps Start a pure launch.
+	setStage("stage")
 	log.Printf("staging %s...", svc.Name)
 	stageStart := time.Now()
 	if err := deployer.Stage(deployCtx, svc); err != nil {
-		result.Status = "failed"
-		result.Error = err.Error()
-		log.Printf("stage failed: %v", err)
-		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "stage", "failed", err.Error())
-		return result, err
+		return handleErr("stage", err)
 	}
 	log.Printf("stage done in %s", time.Since(stageStart).Round(time.Millisecond))
 
-	// 5. Stop old instance (only if the model manages a process)
+	// 5. Stop old instance (only if the model manages a process). Stop 走 parent
+	// ctx：即便 deployCtx 已超时，仍需能清理旧进程。
 	if s, ok := deployer.(Stoppable); ok {
 		log.Printf("stopping %s...", svc.Name)
 		_ = s.Stop(ctx, svc)
 	}
 
-	// 6. Start new instance (only if the model runs a process)
+	// 6. Start new instance + 就绪门控（only if the model runs a process）。
 	if s, ok := deployer.(Startable); ok {
 		log.Printf("starting %s...", svc.Name)
-		if err := s.Start(ctx, svc); err != nil {
-			result.Status = "failed"
-			result.Error = err.Error()
-			log.Printf("start failed: %v", err)
-			sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "start", "failed", err.Error())
-			return result, err
+		setStage("start")
+		if err := s.Start(deployCtx, svc); err != nil {
+			return handleErr("start", err)
+		}
+		started = true
+		setStage("readiness")
+		if err := readinessGate(deployCtx, svc, deployer, log); err != nil {
+			return handleErr("readiness", err)
 		}
 	}
 
+	// 7. Success：清 starting 状态，发 success 邮件。
+	_ = servstate.Clear(svc.Name)
 	result.Status = "success"
 	result.AuthorEmail = authorEmail
 	sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "", "success", "")
 	log.Printf("%s deployed successfully", svc.Name)
 	return result, nil
+}
+
+// readinessGate 在 deployCtx 下轮询 svc.HealthURL 直至 2xx/3xx 通过；每轮先做
+// 进程存活快速失败（Stoppable 模型 Status==stopped 即报错，static 无进程跳过）；
+// health 未过则等 ticker 下一轮或 ctx.Done（区分 Canceled/DeadlineExceeded）。
+// 非忙轮询：ticker + select。
+func readinessGate(ctx context.Context, svc *config.ServiceConfig, deployer Deployer, log *logger.Logger) error {
+	interval, _ := svc.HealthIntervalDuration()
+	client := &http.Client{Timeout: 3 * time.Second}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		// 进程/容器存活快速失败（static 无进程，跳过）。
+		if _, ok := deployer.(Stoppable); ok {
+			if st, _ := deployer.Status(ctx, svc); st == "stopped" {
+				return fmt.Errorf("服务进程启动后立即退出（%s）", svc.Name)
+			}
+		}
+		if resp, err := client.Get(svc.HealthURL); err == nil {
+			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+				resp.Body.Close()
+				log.Printf("health check passed: %s", svc.HealthURL)
+				return nil
+			}
+			resp.Body.Close()
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return ctx.Err() // Canceled 或 DeadlineExceeded
+		}
+	}
 }
 
 // ServiceStart starts a service without rebuilding.

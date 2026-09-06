@@ -3,11 +3,18 @@ package deploy
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploylock"
+	"github.com/auto-deployer/auto-deployer/internal/logger"
 	"github.com/auto-deployer/auto-deployer/internal/servstate"
 )
 
@@ -165,3 +172,125 @@ func (f *fakeDeployer) Status(context.Context, *config.ServiceConfig) (string, e
 	return f.status, nil
 }
 func (f *fakeDeployer) SetOutput(io.Writer) {}
+
+// fakeStartableDeployer 实现 Deployer+Startable+Stoppable 全接口：
+// Build/Stage no-op；Start 置 started；Status 由 started 派生（running/stopped）。
+// 供 Deploy 就绪门控与 readinessGate 单测复用（T7/T8 同名同结构）。
+type fakeStartableDeployer struct {
+	started bool
+	status string // 预留：T7/T8 复用；当前 Status 由 started 派生
+}
+
+func (f *fakeStartableDeployer) Build(context.Context, *config.ServiceConfig) error  { return nil }
+func (f *fakeStartableDeployer) Stage(context.Context, *config.ServiceConfig) error  { return nil }
+func (f *fakeStartableDeployer) Start(context.Context, *config.ServiceConfig) error  { f.started = true; return nil }
+func (f *fakeStartableDeployer) Stop(context.Context, *config.ServiceConfig) error   { f.started = false; return nil }
+func (f *fakeStartableDeployer) Status(context.Context, *config.ServiceConfig) (string, error) {
+	if f.started {
+		return "running", nil
+	}
+	return "stopped", nil
+}
+func (f *fakeStartableDeployer) SetOutput(io.Writer) {}
+
+// setupBareRepo 构造一个含单次提交的本地 bare git 仓库（branch=main），
+// 供 Deploy 的真实 fetch 路径使用（隔离外部网络）。复用 build/git_test.go 模式。
+func setupBareRepo(t *testing.T) string {
+	t.Helper()
+	setupDir := t.TempDir()
+	runGit(t, setupDir, "init", "-b", "main")
+	runGit(t, setupDir, "config", "user.email", "test@test.com")
+	runGit(t, setupDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(setupDir, "README.md"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, setupDir, "add", ".")
+	runGit(t, setupDir, "commit", "-m", "init")
+	bareDir := t.TempDir()
+	runGit(t, setupDir, "clone", "--bare", setupDir, bareDir)
+	return bareDir
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+	}
+}
+
+// TestDeployFailsWhenHealthNeverPasses 验证：health 持续 500 时，readinessGate
+// 轮询至 deployCtx 超时 → handleErr 走失败路径（start_failed + 停半起 + 邮件）。
+func TestDeployFailsWhenHealthNeverPasses(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+
+	svc := &config.ServiceConfig{
+		Name: "s1", Type: "jvm", Workspace: t.TempDir(),
+		Repo:           config.RepoConfig{URL: setupBareRepo(t), Branch: "main"},
+		HealthURL:      srv.URL,
+		HealthInterval: "20ms",
+		Timeout:        "200ms", // 快速超时，使 readiness 必然失败
+		Build:          config.BuildConfig{Command: config.Command{"true"}},
+	}
+	d := &fakeStartableDeployer{started: true, status: "running"}
+	res, err := Deploy(context.Background(), svc, &config.AppConfig{}, d, nil)
+	if err == nil || res.Status != "failed" {
+		t.Fatalf("expected failed, got %+v err=%v", res, err)
+	}
+	st, _ := servstate.Read("s1")
+	if st.Status != "start_failed" {
+		t.Fatalf("state should be start_failed, got %q", st.Status)
+	}
+}
+
+// TestDeploySucceedsWhenHealthPasses 验证：health 返回 200 时 readinessGate 即刻通过，
+// Deploy 成功并清除 .state，且确实探测过 health 端点（证明门控被执行）。
+func TestDeploySucceedsWhenHealthPasses(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	svc := &config.ServiceConfig{
+		Name: "s2", Type: "jvm", Workspace: t.TempDir(),
+		Repo:           config.RepoConfig{URL: setupBareRepo(t), Branch: "main"},
+		HealthURL:      srv.URL,
+		HealthInterval: "10ms",
+		Build:          config.BuildConfig{Command: config.Command{"true"}},
+	}
+	d := &fakeStartableDeployer{started: true, status: "running"}
+	res, err := Deploy(context.Background(), svc, &config.AppConfig{}, d, nil)
+	if err != nil || res.Status != "success" {
+		t.Fatalf("expected success, got %+v err=%v", res, err)
+	}
+	if atomic.LoadInt32(&hits) == 0 {
+		t.Fatal("readiness gate should have probed the health endpoint")
+	}
+	if _, ok := servstate.Read("s2"); ok {
+		t.Fatal("success should clear .state")
+	}
+}
+
+// TestReadinessGateFastFailOnStoppedProcess 验证 readinessGate 的进程存活快速失败：
+// deployer.Status 返回 stopped 时，无需等待 health 轮询即返回错误（health 端点不可达亦不触达）。
+func TestReadinessGateFastFailOnStoppedProcess(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	svc := &config.ServiceConfig{
+		Name: "rf", Type: "jvm",
+		HealthURL:      "http://127.0.0.1:0/health", // 不可达；fast-fail 先行返回，不触达
+		HealthInterval: "10ms",
+	}
+	d := &fakeStartableDeployer{started: false} // Status → "stopped"
+	err := readinessGate(context.Background(), svc, d, logger.GetServiceLogger("rf"))
+	if err == nil || !strings.Contains(err.Error(), "立即退出") {
+		t.Fatalf("expected fast-fail stopped error, got %v", err)
+	}
+}
