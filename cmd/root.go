@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/spf13/cobra"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploy"
+	"github.com/auto-deployer/auto-deployer/internal/deploylock"
 	"github.com/auto-deployer/auto-deployer/internal/registry"
 )
 
@@ -40,6 +42,10 @@ func init() {
 
 // runSvcShortFlags dispatches `svc <name> {-s|-t|-r}` to the service
 // lifecycle; with no flag it prints the service status.
+//
+// start/restart 走非阻塞：Linux fork 到 `service start/restart` 长格式子进程
+// （子进程带 --no-fork --locked）；macOS 前台 + TryAcquire。stop 始终前台
+// （ServiceStop 内部已清 state）。
 func runSvcShortFlags(cmd *cobra.Command, args []string) error {
 	serviceName := args[0]
 
@@ -75,11 +81,11 @@ func runSvcShortFlags(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	switch {
 	case boolFlag(cmd, "start"):
-		return deploy.ServiceStart(ctx, svc, d)
+		return runSvcStart(ctx, path, serviceName, svc, d)
 	case boolFlag(cmd, "stop"):
 		return deploy.ServiceStop(ctx, svc, d)
 	case boolFlag(cmd, "restart"):
-		return deploy.ServiceRestart(ctx, svc, d)
+		return runSvcRestart(ctx, path, serviceName, svc, d)
 	default:
 		st, err := deploy.GetServiceStatusRich(ctx, svc, d)
 		if err != nil {
@@ -88,6 +94,42 @@ func runSvcShortFlags(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s: %s\n", svc.Name, st)
 		return nil
 	}
+}
+
+// runSvcStart 实现 `svc <name> -s`：Linux fork 到 `service start` 长格式子进程
+// （子进程 --no-fork --locked）；macOS 前台 + TryAcquire + ServiceStart。
+func runSvcStart(ctx context.Context, configPath, serviceName string, svc *config.ServiceConfig, d deploy.Deployer) error {
+	if runtime.GOOS == "linux" {
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("failed to get executable path: %w", err)
+		}
+		return forkBackground(exe, configPath, serviceName, []string{"service", "start"})
+	}
+	lock, err := deploylock.TryAcquire(serviceName)
+	if err != nil {
+		return fmt.Errorf("服务 %s 正在启动/部署中，请勿重复操作", serviceName)
+	}
+	defer lock.Release()
+	return deploy.ServiceStart(ctx, svc, d)
+}
+
+// runSvcRestart 实现 `svc <name> -r`：Linux fork 到 `service restart` 长格式子进程；
+// macOS 前台 + TryAcquire + ServiceRestart。
+func runSvcRestart(ctx context.Context, configPath, serviceName string, svc *config.ServiceConfig, d deploy.Deployer) error {
+	if runtime.GOOS == "linux" {
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("failed to get executable path: %w", err)
+		}
+		return forkBackground(exe, configPath, serviceName, []string{"service", "restart"})
+	}
+	lock, err := deploylock.TryAcquire(serviceName)
+	if err != nil {
+		return fmt.Errorf("服务 %s 正在启动/部署中，请勿重复操作", serviceName)
+	}
+	defer lock.Release()
+	return deploy.ServiceRestart(ctx, svc, d)
 }
 
 func boolFlag(cmd *cobra.Command, name string) bool {

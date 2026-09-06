@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
@@ -95,7 +96,11 @@ var deployCmd = &cobra.Command{
 
 		// Fork to background on Linux (survives SSH disconnect).
 		if runtime.GOOS == "linux" {
-			return forkDeploy(path, serviceName)
+			exe, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("failed to get executable path: %w", err)
+			}
+			return forkBackground(exe, path, serviceName, []string{"deploy"})
 		}
 
 		// On macOS, run in foreground with the deploy lock.
@@ -109,25 +114,17 @@ var deployCmd = &cobra.Command{
 	},
 }
 
-// forkDeploy spawns a child process to run deployment in background. The deploy
-// lock is acquired (non-blocking) in the parent for fail-fast feedback, then
-// handed to the child via ExtraFiles; the child runs --locked so it skips its
-// own TryAcquire. The parent closes its lock fd without unlocking (flock locks
-// are shared across duplicated fds), so the lock stays held by the child until
-// it exits.
-func forkDeploy(configPath, serviceName string) error {
+// forkBackground 用 setsid 后台执行 exe childArgs（如 ["deploy"] 或 ["service","start"]），
+// 继承 deploy lock fd，日志写服务日志。复用于 deploy / svc start / svc restart。
+// 父进程以 TryAcquire 抢锁做 fail-fast 反馈，然后经 ExtraFiles 把锁 fd 传给子进程；
+// 父进程 Close（不解锁）——flock 锁跨重复 fd 共享，子进程持有至退出。子进程跑 --locked
+// 跳过自己的 TryAcquire，退出前 ReleaseInherited 显式释放（部署的服务也会继承该 fd）。
+func forkBackground(exe, configPath, serviceName string, childArgs []string) error {
 	lock, err := deploylock.TryAcquire(serviceName)
 	if err != nil {
-		return fmt.Errorf("服务 %s 正在部署中，请勿重复操作", serviceName)
+		return fmt.Errorf("服务 %s 正在启动/部署中，请勿重复操作", serviceName)
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		lock.Release()
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-
-	// Use home directory for consistent log path with 'deployd logs' command
 	homeDir, _ := os.UserHomeDir()
 	logDir := filepath.Join(homeDir, ".deployd", "services")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
@@ -135,7 +132,6 @@ func forkDeploy(configPath, serviceName string) error {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
 	logPath := filepath.Join(logDir, fmt.Sprintf("%s.log", serviceName))
-
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		lock.Release()
@@ -143,26 +139,26 @@ func forkDeploy(configPath, serviceName string) error {
 	}
 	defer logFile.Close()
 
-	cmd := exec.Command(exe, "deploy", "--no-fork", "--locked", "-c", configPath, serviceName)
-	// Tell the child which fd holds the inherited deploy lock (ExtraFiles[0] = fd 3)
-	// so it can mark it close-on-exec before launching the service.
-	cmd.Env = append(os.Environ(), "DEPLOYD_LOCK_FD=3")
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.Stdin = nil
-	cmd.ExtraFiles = []*os.File{lock.File()}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// 子进程参数：<childArgs...> --no-fork --locked -c <configPath> <serviceName>
+	args := append(append([]string{}, childArgs...), "--no-fork", "--locked", "-c", configPath, serviceName)
+	c := exec.Command(exe, args...)
+	// 告知子进程哪个 fd 持有继承来的 deploy lock（ExtraFiles[0] = fd 3），
+	// 供其在启动服务前标记 close-on-exec。
+	c.Env = append(os.Environ(), "DEPLOYD_LOCK_FD=3")
+	c.Stdout = logFile
+	c.Stderr = logFile
+	c.Stdin = nil
+	c.ExtraFiles = []*os.File{lock.File()}
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	if err := cmd.Start(); err != nil {
+	if err := c.Start(); err != nil {
 		lock.Release()
-		return fmt.Errorf("failed to start deployment: %w", err)
+		return fmt.Errorf("failed to start background process: %w", err)
 	}
 
-	// Child has inherited the lock fd; parent detaches without unlocking.
+	// 子进程已继承锁 fd；父进程分离且不解锁。
 	lock.Close()
 
-	fmt.Printf("[deploy] deployment started for %s in background (pid: %d)\n", serviceName, cmd.Process.Pid)
-	fmt.Printf("[deploy] logs: %s\n", logPath)
-	fmt.Printf("[deploy] use 'deployd logs %s' to follow\n", serviceName)
+	fmt.Printf("[%s] %s 后台启动 (pid: %d)，用 deployd status 查看\n", strings.Join(childArgs, " "), serviceName, c.Process.Pid)
 	return nil
 }

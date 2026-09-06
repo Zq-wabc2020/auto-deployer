@@ -51,8 +51,14 @@ func (m *mockDeployer) Status(ctx context.Context, svc *config.ServiceConfig) (s
 func (m *mockDeployer) SetOutput(w io.Writer) {}
 
 func TestServiceStart(t *testing.T) {
-	m := &mockDeployer{}
-	svc := &config.ServiceConfig{Name: "test", Type: "springboot", Workspace: "/tmp/test"}
+	t.Setenv("HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	m := &mockDeployer{status: "running"}
+	svc := &config.ServiceConfig{Name: "test", Type: "springboot", Workspace: "/tmp/test",
+		HealthURL: srv.URL, HealthInterval: "10ms"}
 	err := ServiceStart(context.Background(), svc, m)
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +72,7 @@ func TestServiceStart(t *testing.T) {
 }
 
 func TestServiceStop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	m := &mockDeployer{}
 	svc := &config.ServiceConfig{Name: "test", Type: "springboot", Workspace: "/tmp/test"}
 	err := ServiceStop(context.Background(), svc, m)
@@ -81,8 +88,14 @@ func TestServiceStop(t *testing.T) {
 }
 
 func TestServiceRestart(t *testing.T) {
-	m := &mockDeployer{}
-	svc := &config.ServiceConfig{Name: "test", Type: "springboot", Workspace: "/tmp/test"}
+	t.Setenv("HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	m := &mockDeployer{status: "running"}
+	svc := &config.ServiceConfig{Name: "test", Type: "springboot", Workspace: "/tmp/test",
+		HealthURL: srv.URL, HealthInterval: "10ms"}
 	err := ServiceRestart(context.Background(), svc, m)
 	if err != nil {
 		t.Fatal(err)
@@ -292,5 +305,54 @@ func TestReadinessGateFastFailOnStoppedProcess(t *testing.T) {
 	err := readinessGate(context.Background(), svc, d, logger.GetServiceLogger("rf"))
 	if err == nil || !strings.Contains(err.Error(), "立即退出") {
 		t.Fatalf("expected fast-fail stopped error, got %v", err)
+	}
+}
+
+// TestServiceStartWritesStartingThenClearsOnHealth 验证 ServiceStart 在 health 通过后
+// 清除 starting 状态（成功后无 .state）。
+func TestServiceStartWritesStartingThenClearsOnHealth(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	svc := &config.ServiceConfig{Name: "ss", Type: "jvm", HealthURL: srv.URL, HealthInterval: "10ms"}
+	d := &fakeStartableDeployer{}
+	if err := ServiceStart(context.Background(), svc, d); err != nil {
+		t.Fatalf("ServiceStart: %v", err)
+	}
+	if _, ok := servstate.Read("ss"); ok {
+		t.Fatal("health pass 后应清除 starting state")
+	}
+}
+
+// TestServiceStartFailedWritesStartFailed 验证 health 持续失败时 ServiceStart 写 start_failed。
+func TestServiceStartFailedWritesStartFailed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	svc := &config.ServiceConfig{Name: "sf", Type: "jvm", HealthURL: srv.URL, HealthInterval: "10ms", Timeout: "50ms"}
+	d := &fakeStartableDeployer{started: true, status: "running"}
+	err := ServiceStart(context.Background(), svc, d)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	st, _ := servstate.Read("sf")
+	if st.Status != "start_failed" {
+		t.Fatalf("got %q", st.Status)
+	}
+}
+
+// TestServiceStopClearsState 验证 ServiceStop 清除粘性的 start_failed → stopped。
+func TestServiceStopClearsState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = servstate.WriteFailed("sx")
+	if err := ServiceStop(context.Background(), &config.ServiceConfig{Name: "sx"}, &fakeStartableDeployer{}); err != nil {
+		t.Fatalf("ServiceStop: %v", err)
+	}
+	if _, ok := servstate.Read("sx"); ok {
+		t.Fatal("stop 应清除 start_failed")
 	}
 }

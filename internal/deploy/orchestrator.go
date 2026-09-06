@@ -248,23 +248,51 @@ func readinessGate(ctx context.Context, svc *config.ServiceConfig, deployer Depl
 	}
 }
 
-// ServiceStart starts a service without rebuilding.
+// ServiceStart starts a service without rebuilding. 走 starting → Start → 就绪门控：
+// 用 withDeployCtx 取总预算+手动取消层；先清残留取消 sentinel（T8 接线 watcher，此处仅清旧），
+// 写 starting，Start 后跑 readinessGate。成功清 .state；失败停半起服务并写 start_failed。
+// 不接 SIGINT/watcher（T8 任务）。
 func ServiceStart(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) error {
-	if s, ok := deployer.(Startable); ok {
-		return s.Start(ctx, svc)
+	s, ok := deployer.(Startable)
+	if !ok {
+		return fmt.Errorf("%s 服务类型不支持 start，请用 deploy 重新发布", svc.Type)
 	}
-	return fmt.Errorf("%s 服务类型不支持 start，请用 deploy 重新发布", svc.Type)
+	deployCtx, cancelDeploy := withDeployCtx(ctx, svc)
+	defer cancelDeploy()
+	// 清残留取消 sentinel（T8 watcher 接线；此处仅清旧文件，不阻塞）。
+	_ = servstate.ClearCancel(svc.Name)
+	_ = servstate.WriteStarting(svc.Name, "start")
+	log := logger.GetServiceLogger(svc.Name)
+	if err := s.Start(deployCtx, svc); err != nil {
+		_ = servstate.WriteFailed(svc.Name)
+		return err
+	}
+	if err := readinessGate(deployCtx, svc, deployer, log); err != nil {
+		// 就绪失败：停半起服务（走 parent ctx，即便 deployCtx 已超时仍能清理）+ 写 start_failed。
+		if st, ok := deployer.(Stoppable); ok {
+			_ = st.Stop(ctx, svc)
+		}
+		_ = servstate.WriteFailed(svc.Name)
+		return err
+	}
+	_ = servstate.Clear(svc.Name)
+	return nil
 }
 
-// ServiceStop stops a service.
+// ServiceStop stops a service and clears its persistent state (start_failed → stopped)。
 func ServiceStop(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) error {
 	if s, ok := deployer.(Stoppable); ok {
-		return s.Stop(ctx, svc)
+		if err := s.Stop(ctx, svc); err != nil {
+			return err
+		}
 	}
-	return fmt.Errorf("%s 服务类型不支持 stop，请用 deploy 重新发布", svc.Type)
+	// stop 清除 start_failed → stopped（无持久态，回到实时探测）。
+	_ = servstate.Clear(svc.Name)
+	return nil
 }
 
-// ServiceRestart stops and starts a service without rebuilding (no Build/Stage).
+// ServiceRestart stops and starts a service without rebuilding (no Build/Stage)。
+// ServiceStart 内部已含 starting + 就绪门控 + 失败处置。
 func ServiceRestart(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) error {
 	if _, ok := deployer.(Startable); !ok {
 		return fmt.Errorf("%s 服务类型不支持 restart，请用 deploy 重新发布", svc.Type)
@@ -272,7 +300,7 @@ func ServiceRestart(ctx context.Context, svc *config.ServiceConfig, deployer Dep
 	if s, ok := deployer.(Stoppable); ok {
 		_ = s.Stop(ctx, svc)
 	}
-	return deployer.(Startable).Start(ctx, svc)
+	return ServiceStart(ctx, svc, deployer)
 }
 
 // GetServiceStatus returns the status of a service.
