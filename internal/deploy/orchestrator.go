@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
@@ -117,6 +120,12 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 
 	// 清残留取消 sentinel（T8 接线 watcher；此处仅清旧文件，不阻塞）。
 	_ = servstate.ClearCancel(svc.Name)
+	// T8：watchCancel 轮询取消 sentinel，命中则 cancel deployCtx；SIGINT 等价取消。
+	go watchCancel(deployCtx, svc.Name, cancelDeploy, log)
+	stopSig := make(chan os.Signal, 1)
+	signal.Notify(stopSig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(stopSig)
+	go func() { select { case <-stopSig: cancelDeploy(); case <-deployCtx.Done(): } }()
 
 	// 写 starting 状态（每阶段刷新子阶段，供 status 查询展示当前进度）。
 	setStage := func(s string) { _ = servstate.WriteStarting(svc.Name, s) }
@@ -250,8 +259,8 @@ func readinessGate(ctx context.Context, svc *config.ServiceConfig, deployer Depl
 
 // ServiceStart starts a service without rebuilding. 走 starting → Start → 就绪门控：
 // 用 withDeployCtx 取总预算+手动取消层；先清残留取消 sentinel（T8 接线 watcher，此处仅清旧），
-// 写 starting，Start 后跑 readinessGate。成功清 .state；失败停半起服务并写 start_failed。
-// 不接 SIGINT/watcher（T8 任务）。
+// 写 starting，Start 后跑 readinessGate。成功清 .state；失败/取消区分手动取消（Stop 半起 + 清 state，
+// 不发邮件）与超时/真失败（Stop + start_failed）。
 func ServiceStart(ctx context.Context, svc *config.ServiceConfig, deployer Deployer) error {
 	s, ok := deployer.(Startable)
 	if !ok {
@@ -259,16 +268,37 @@ func ServiceStart(ctx context.Context, svc *config.ServiceConfig, deployer Deplo
 	}
 	deployCtx, cancelDeploy := withDeployCtx(ctx, svc)
 	defer cancelDeploy()
+	log := logger.GetServiceLogger(svc.Name)
 	// 清残留取消 sentinel（T8 watcher 接线；此处仅清旧文件，不阻塞）。
 	_ = servstate.ClearCancel(svc.Name)
+	// T8：watchCancel 轮询取消 sentinel，命中则 cancel deployCtx。
+	go watchCancel(deployCtx, svc.Name, cancelDeploy, log)
+	// SIGINT/SIGTERM（前台进程）等价取消；forked Linux 子进程靠 sentinel。
+	stopSig := make(chan os.Signal, 1)
+	signal.Notify(stopSig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(stopSig)
+	go func() { select { case <-stopSig: cancelDeploy(); case <-deployCtx.Done(): } }()
+
 	_ = servstate.WriteStarting(svc.Name, "start")
-	log := logger.GetServiceLogger(svc.Name)
 	if err := s.Start(deployCtx, svc); err != nil {
+		if deployCtx.Err() == context.Canceled {
+			// 手动取消：清 state，不发邮件。
+			_ = servstate.Clear(svc.Name)
+			return ctxErr(deployCtx)
+		}
 		_ = servstate.WriteFailed(svc.Name)
 		return err
 	}
 	if err := readinessGate(deployCtx, svc, deployer, log); err != nil {
-		// 就绪失败：停半起服务（走 parent ctx，即便 deployCtx 已超时仍能清理）+ 写 start_failed。
+		if deployCtx.Err() == context.Canceled {
+			// 手动取消：Stop 半起 + 清 state，不发邮件。
+			if st, ok := deployer.(Stoppable); ok {
+				_ = st.Stop(ctx, svc)
+			}
+			_ = servstate.Clear(svc.Name)
+			return ctxErr(deployCtx)
+		}
+		// 失败/超时：Stop 半起 + start_failed。
 		if st, ok := deployer.(Stoppable); ok {
 			_ = st.Stop(ctx, svc)
 		}
@@ -276,6 +306,34 @@ func ServiceStart(ctx context.Context, svc *config.ServiceConfig, deployer Deplo
 		return err
 	}
 	_ = servstate.Clear(svc.Name)
+	return nil
+}
+
+// watchCancel 轮询 <name>.cancel sentinel，命中则调 cancel() 并清 sentinel。
+// 随 ctx 退出（select 听 ctx），不泄漏。
+func watchCancel(ctx context.Context, name string, cancel context.CancelFunc, log *logger.Logger) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if servstate.HasCancel(name) {
+				log.Printf("收到取消信号，中止 %s", name)
+				_ = servstate.ClearCancel(name)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+// ctxErr 把 ctx.Err() 包装为 "cancelled: %w"；ctx 未取消时返回 nil。
+func ctxErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("cancelled: %w", err)
+	}
 	return nil
 }
 

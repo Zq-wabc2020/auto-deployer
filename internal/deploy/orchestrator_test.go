@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploylock"
@@ -342,6 +343,52 @@ func TestServiceStartFailedWritesStartFailed(t *testing.T) {
 	st, _ := servstate.Read("sf")
 	if st.Status != "start_failed" {
 		t.Fatalf("got %q", st.Status)
+	}
+}
+
+// TestCancelAbortsReadiness 验证 T8 取消链路：readiness 轮询期间另一 goroutine 写取消 sentinel，
+// watchCancel 命中后 cancel deployCtx → readinessGate 返回 Canceled → ServiceStart 走取消路径
+// （清 state，非 start_failed）。
+func TestCancelAbortsReadiness(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ready := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-ready // 永不通过
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	defer close(ready)
+	svc := &config.ServiceConfig{Name: "sc", Type: "jvm", HealthURL: srv.URL, HealthInterval: "10ms", Timeout: "10s"}
+	d := &fakeStartableDeployer{}
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		_ = servstate.WriteCancel("sc")
+	}()
+	err := ServiceStart(context.Background(), svc, d)
+	if err == nil {
+		t.Fatal("expected cancel error")
+	}
+	// 取消应清 state（→ stopped，非 start_failed）
+	if _, ok := servstate.Read("sc"); ok {
+		t.Fatal("cancel 应清 state")
+	}
+}
+
+// TestCancelStopsHalfStarted 验证取消路径停半起服务：readiness 失败但 ctx 已 Canceled 时，
+// ServiceStart 应 Stop 半起进程（d.started → false）。
+func TestCancelStopsHalfStarted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }))
+	defer srv.Close()
+	svc := &config.ServiceConfig{Name: "sh", Type: "jvm", HealthURL: srv.URL, HealthInterval: "10ms", Timeout: "10s"}
+	d := &fakeStartableDeployer{}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = servstate.WriteCancel("sh")
+	}()
+	ServiceStart(context.Background(), svc, d)
+	if d.started {
+		t.Fatal("取消应 Stop 半起进程")
 	}
 }
 
