@@ -67,7 +67,11 @@ func (n *Notifier) Send(_ context.Context, subject, body string) error {
 // sendSMTP sends via SMTP (SSL/TLS).
 func (n *Notifier) sendSMTP(subject, body string) error {
 	recipients := n.to
-	auth := smtp.PlainAuth("", n.username, n.username, n.token)
+	// 空用户名 = 无认证中继，不尝试 AUTH（smtp.SendMail 对 nil auth 也会跳过）。
+	var auth smtp.Auth
+	if n.username != "" {
+		auth = smtp.PlainAuth("", n.username, n.token, n.smtpHost)
+	}
 	addr := fmt.Sprintf("%s:%d", n.smtpHost, n.smtpPort)
 
 	msg := n.buildMessage(subject, body)
@@ -84,8 +88,10 @@ func (n *Notifier) sendSMTP(subject, body string) error {
 		}
 		defer client.Close()
 
-		if err := client.Auth(auth); err != nil {
-			return fmt.Errorf("SMTP auth: %w", err)
+		if auth != nil {
+			if err := client.Auth(auth); err != nil {
+				return fmt.Errorf("SMTP auth: %w", err)
+			}
 		}
 		if err := client.Mail(n.username); err != nil {
 			return fmt.Errorf("SMTP mail: %w", err)
