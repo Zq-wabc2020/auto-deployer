@@ -41,7 +41,7 @@ func (p *Plugin) SetOutput(w io.Writer) {
 
 // jvmDeployConfig is the strategy-layer config parsed from svc.Deploy.
 type jvmDeployConfig struct {
-	Artifact string            `yaml:"artifact"` // 产物 glob，如 target/*.jar；不填=原地启动
+	Artifact config.Command    `yaml:"artifact"` // 产物 glob 或列表(如 ["a.jar","b.jar"])；不填=原地启动
 	Dest     string            `yaml:"dest"`     // 归位目录；不填=workspace 根
 	Run      string            `yaml:"run"`      // 纯启动命令，不含 nohup/&
 	Env      map[string]string `yaml:"env"`      // 运行时环境变量
@@ -81,7 +81,7 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 // artifact configured, Stage is a no-op (in-place launch).
 func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	dc := p.deployConfig(svc)
-	if dc.Artifact == "" {
+	if dc.Artifact.Empty() {
 		// In-place launch: no placement, no cleanup.
 		return nil
 	}
@@ -89,7 +89,7 @@ func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	if dest == "" {
 		dest = svc.Workspace // default: workspace root (preserves old moveJarToRoot behavior)
 	}
-	keep, err := build.CopyArtifact(svc.Workspace, dc.Artifact, dest, p.output)
+	keep, err := build.CopyArtifact(ctx, svc.Workspace, dc.Artifact.Slice(), dest, p.output)
 	if err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
@@ -114,7 +114,7 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 	// Run from the deploy directory when the artifact was placed there, else
 	// from the workspace (in-place launch).
 	runDir := svc.Workspace
-	if dc.Artifact != "" && dc.Dest != "" {
+	if !dc.Artifact.Empty() && dc.Dest != "" {
 		runDir = dc.Dest
 	}
 

@@ -46,9 +46,9 @@ func (p *Plugin) SetOutput(w io.Writer) {
 
 // staticDeployConfig is the strategy-layer config parsed from svc.Deploy.
 type staticDeployConfig struct {
-	Artifact    string `yaml:"artifact"`     // required: built files glob, e.g. "dist/*"
-	Dest        string `yaml:"dest"`         // required: web server docroot
-	NginxReload bool   `yaml:"nginx_reload"` // run `nginx -s reload` after copy
+	Artifact    config.Command `yaml:"artifact"`     // required: built files glob 或列表(如 ["dist/app.js","dist/index.html"])
+	Dest        string         `yaml:"dest"`         // required: web server docroot
+	NginxReload bool           `yaml:"nginx_reload"` // run `nginx -s reload` after copy
 	// Health 字段已移除：改由中心层解析到 svc.HealthURL，Status 直接读取。
 }
 
@@ -75,10 +75,10 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 // reloads nginx. This is the activation itself -- there is no Start phase.
 func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	dc := p.deployConfig(svc)
-	if dc.Artifact == "" || dc.Dest == "" {
+	if dc.Artifact.Empty() || dc.Dest == "" {
 		return fmt.Errorf("static 服务要求 deploy.artifact 和 deploy.dest（如 artifact: dist/*, dest: /usr/share/nginx/html/app）")
 	}
-	if _, err := build.CopyArtifact(svc.Workspace, dc.Artifact, dc.Dest, p.output); err != nil {
+	if _, err := build.CopyArtifact(ctx, svc.Workspace, dc.Artifact.Slice(), dc.Dest, p.output); err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
 	if dc.NginxReload {

@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,7 +32,7 @@ func TestCopyArtifact_FlatFiles(t *testing.T) {
 	writeFile(t, filepath.Join(ws, "target", "app-1.0.jar.original.jar"), "source")
 	dest := filepath.Join(t.TempDir(), "deploy")
 
-	copied, err := CopyArtifact(ws, "target/*.jar", dest, os.Stdout)
+	copied, err := CopyArtifact(context.Background(), ws, "target/*.jar", dest, os.Stdout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +49,7 @@ func TestCopyArtifact_FlatFiles(t *testing.T) {
 
 func TestCopyArtifact_NoMatch(t *testing.T) {
 	ws := t.TempDir()
-	if _, err := CopyArtifact(ws, "target/*.jar", filepath.Join(t.TempDir(), "d"), os.Stdout); err == nil {
+	if _, err := CopyArtifact(context.Background(), ws, "target/*.jar", filepath.Join(t.TempDir(), "d"), os.Stdout); err == nil {
 		t.Fatal("expected error for no matching artifact")
 	}
 }
@@ -62,7 +63,7 @@ func TestCopyArtifact_LiteralDirCopiesContents(t *testing.T) {
 		writeFile(t, filepath.Join(ws, "dist", "js", "app.js"), "js")
 		dest := filepath.Join(t.TempDir(), "html")
 
-		copied, err := CopyArtifact(ws, pattern, dest, os.Stdout)
+		copied, err := CopyArtifact(context.Background(), ws, pattern, dest, os.Stdout)
 		if err != nil {
 			t.Fatalf("pattern %q: %v", pattern, err)
 		}
@@ -86,7 +87,7 @@ func TestCopyArtifact_WildcardDirKeepsName(t *testing.T) {
 	writeFile(t, filepath.Join(ws, "dist", "js", "app.js"), "js")
 	dest := filepath.Join(t.TempDir(), "html")
 
-	copied, err := CopyArtifact(ws, "dist/*", dest, os.Stdout)
+	copied, err := CopyArtifact(context.Background(), ws, "dist/*", dest, os.Stdout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,5 +105,64 @@ func TestCopyArtifact_WildcardDirKeepsName(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'js' in copied names, got %v", copied)
+	}
+}
+
+// 列表形式：两个具体文件（spec §9 的 hello1.txt + test.json 场景），平铺到 dest 根。
+func TestCopyArtifact_ListTwoFiles(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, filepath.Join(ws, "hello1.txt"), "hello")
+	writeFile(t, filepath.Join(ws, "test.json"), `{"a":1}`)
+	dest := filepath.Join(t.TempDir(), "deploy")
+
+	copied, err := CopyArtifact(context.Background(), ws, []string{"hello1.txt", "test.json"}, dest, os.Stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != 2 {
+		t.Fatalf("expected 2 copied names, got %v", copied)
+	}
+	if readFile(t, filepath.Join(dest, "hello1.txt")) != "hello" {
+		t.Error("hello1.txt not copied")
+	}
+	if readFile(t, filepath.Join(dest, "test.json")) != `{"a":1}` {
+		t.Error("test.json not copied")
+	}
+}
+
+// 单字符串形式仍是合法输入（向后兼容；等价于单元素列表）。
+func TestCopyArtifact_SingleStringUnchanged(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, filepath.Join(ws, "target", "app.jar"), "jar")
+	dest := filepath.Join(t.TempDir(), "deploy")
+
+	copied, err := CopyArtifact(context.Background(), ws, "target/*.jar", dest, os.Stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != 1 || copied[0] != "app.jar" {
+		t.Errorf("expected [app.jar], got %v", copied)
+	}
+}
+
+// 已取消的 ctx：在 pattern 之间立即返回 ctx.Err()，不再拷贝后续文件。
+func TestCopyArtifact_CancelsBetweenFiles(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, filepath.Join(ws, "a.txt"), "a")
+	writeFile(t, filepath.Join(ws, "b.txt"), "b")
+	dest := filepath.Join(t.TempDir(), "deploy")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 进入 CopyArtifact 前就已取消：第一个 pattern 前就应退出
+
+	copied, err := CopyArtifact(ctx, ws, []string{"a.txt", "b.txt"}, dest, os.Stdout)
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if len(copied) != 0 {
+		t.Errorf("expected no files copied, got %v", copied)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "a.txt")); !os.IsNotExist(err) {
+		t.Error("a.txt should not have been copied after cancel")
 	}
 }

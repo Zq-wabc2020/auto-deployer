@@ -42,7 +42,7 @@ func (p *Plugin) SetOutput(w io.Writer) {
 
 // nodeDeployConfig is the strategy-layer config parsed from svc.Deploy.
 type nodeDeployConfig struct {
-	Artifact string            `yaml:"artifact"` // 可选：产物目录/glob(如 .output)。不填=源码即产物(原地启动)
+	Artifact config.Command    `yaml:"artifact"` // 可选：产物目录/glob 或列表(如 .output)。不填=源码即产物(原地启动)
 	Dest     string            `yaml:"dest"`     // 可选：归位目录。填了才拷贝，run 也在该目录执行
 	Run      string            `yaml:"run"`      // 纯启动命令，如 node server.js，不含 nohup/&
 	Env      map[string]string `yaml:"env"`      // 运行时环境变量
@@ -79,14 +79,14 @@ func (p *Plugin) Build(ctx context.Context, svc *config.ServiceConfig) error {
 // NOT cleaned -- node_modules must survive for incremental rebuilds.
 func (p *Plugin) Stage(ctx context.Context, svc *config.ServiceConfig) error {
 	dc := p.deployConfig(svc)
-	if dc.Artifact == "" {
+	if dc.Artifact.Empty() {
 		return nil // source-is-artifact: run in place
 	}
 	dest := dc.Dest
 	if dest == "" {
 		dest = svc.Workspace
 	}
-	if _, err := build.CopyArtifact(svc.Workspace, dc.Artifact, dest, p.output); err != nil {
+	if _, err := build.CopyArtifact(ctx, svc.Workspace, dc.Artifact.Slice(), dest, p.output); err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
 	fmt.Fprintf(p.output, "[node] staged artifact to %s\n", dest)
@@ -101,7 +101,7 @@ func (p *Plugin) Start(ctx context.Context, svc *config.ServiceConfig) error {
 		return fmt.Errorf("run command is empty (configure deploy.run)")
 	}
 	runDir := svc.Workspace
-	if dc.Artifact != "" && dc.Dest != "" {
+	if !dc.Artifact.Empty() && dc.Dest != "" {
 		runDir = dc.Dest
 	}
 	mgr := process.NewManager(pidFileFor(svc.Name))
