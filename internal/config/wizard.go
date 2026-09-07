@@ -53,6 +53,12 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 		runCmd = ask("Run command (pure launch, no nohup/&)", "java -jar target/"+name+".jar")
 	}
 
+	// deploy.health 所有模型必填：就绪判定与 status 探测共用。
+	// 空输入时给出默认占位（http://localhost:<模型常用端口>/health），仍会写入配置，
+	// 由后续 config 校验兜底提示。
+	healthURL := ask("Health check URL (required, readiness + status probe)", defaultHealthURL(svcType))
+	healthInterval := ask("Health poll interval (optional, default 10s)", "")
+
 	smtpHost := ask("SMTP host (optional, e.g. smtp.qq.com)", "")
 	smtpPortStr := ask("SMTP port", "465")
 	smtpPort, _ := strconv.Atoi(smtpPortStr)
@@ -100,7 +106,7 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 	fmt.Fprintf(&b, "    repo:\n      url: %q\n      branch: %q\n", repoURL, branch)
 	fmt.Fprintf(&b, "    workspace: %q\n", workspace)
 	fmt.Fprintf(&b, "    build:\n      command: %q\n", buildCmd)
-	writeDeployBlock(&b, svcType, name, runCmd)
+	writeDeployBlock(&b, svcType, name, runCmd, healthURL, healthInterval)
 
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		return err
@@ -129,22 +135,49 @@ func defaultBuildCommand(svcType, name string) string {
 	return ""
 }
 
+// defaultHealthURL 按模型给出常用端口的 health 占位默认值（用户仍应按实际改写）。
+func defaultHealthURL(svcType string) string {
+	switch svcType {
+	case "jvm", "springboot":
+		return "http://localhost:8080/health"
+	case "static":
+		return "https://example.com/health"
+	case "node":
+		return "http://localhost:3000/health"
+	default: // python / docker
+		return "http://localhost:8000/health"
+	}
+}
+
 // writeDeployBlock emits the type-specific deploy: section. jvm uses the
 // run command asked earlier; others emit a template for the user to fill in
-// as their plugin lands.
-func writeDeployBlock(b *strings.Builder, svcType, name, runCmd string) {
+// as their plugin lands. health/healthInterval 为所有模型通用字段，总是写入。
+func writeDeployBlock(b *strings.Builder, svcType, name, runCmd, healthURL, healthInterval string) {
+	writeCommon := func() {
+		fmt.Fprintf(b, "      health: %q\n", healthURL)
+		if healthInterval != "" {
+			fmt.Fprintf(b, "      health_interval: %q\n", healthInterval)
+		}
+	}
 	switch svcType {
 	case "jvm", "springboot":
 		fmt.Fprintf(b, "    deploy:\n      run: %q\n", runCmd)
+		writeCommon()
 	case "static":
-		fmt.Fprintf(b, "    deploy:\n      artifact: \"dist/*\"\n      dest: \"/usr/share/nginx/html/%s\"\n      nginx_reload: true\n      # health: \"https://example.com/health\"\n", name)
+		fmt.Fprintf(b, "    deploy:\n      artifact: \"dist/*\"\n      dest: \"/usr/share/nginx/html/%s\"\n      nginx_reload: true\n", name)
+		writeCommon()
 	case "node":
-		fmt.Fprintf(b, "    deploy:\n      run: \"node server.js\"\n      env:\n        NODE_ENV: \"production\"\n")
+		fmt.Fprintf(b, "    deploy:\n      run: \"node server.js\"\n")
+		writeCommon()
+		fmt.Fprintf(b, "      env:\n        NODE_ENV: \"production\"\n")
 	case "python":
 		fmt.Fprintf(b, "    deploy:\n      venv: \".venv\"\n      run: \"uvicorn main:app --host 0.0.0.0 --port 8000\"\n      # migrate: \".venv/bin/alembic upgrade head\"\n")
+		writeCommon()
 	case "docker":
 		fmt.Fprintf(b, "    deploy:\n      image: \"%s:latest\"\n      container: \"%s\"\n      ports: [\"8000:8000\"]\n", name, name)
+		writeCommon()
 	default:
 		fmt.Fprintf(b, "    # deploy:\n    #   run: \"...\"\n")
+		writeCommon()
 	}
 }

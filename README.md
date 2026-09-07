@@ -68,21 +68,24 @@ deployd start
 # 3. 查看状态（守护进程 + 所有服务）
 deployd status
 
-# 4. 手动触发完整部署（拉取 -> 构建 -> 归位 -> 重启 -> 通知）
+# 4. 手动触发完整部署（拉取 -> 构建 -> 归位 -> 重启 -> 就绪 -> 通知）
 deployd deploy <服务名>          # 可用缩写 deployd dep <服务名>
 
-# 5. 服务生命周期（不重新构建）
-deployd svc <服务名>             # 查看服务状态
-deployd svc <服务名> -s          # 启动
-deployd svc <服务名> -t          # 停止
-deployd svc <服务名> -r          # 重启
+# 5. 取消进行中的部署/启动（卡在启动中时释放资源）
+deployd cancel <服务名>
 
-# 6. 查看日志
+# 6. 服务生命周期（不重新构建）
+deployd svc <服务名>             # 查看服务状态
+deployd svc <服务名> -s          # 启动（后台执行，用 deployd status 查进度）
+deployd svc <服务名> -t          # 停止
+deployd svc <服务名> -r          # 重启（后台执行，用 deployd status 查进度）
+
+# 7. 查看日志
 deployd logs              # 守护进程日志
 deployd logs <服务名>     # 服务日志
 deployd logs <服务名> -f  # 实时跟踪
 
-# 7. 停止守护进程
+# 8. 停止守护进程
 deployd stop
 ```
 
@@ -98,20 +101,37 @@ deployd stop
 | `deployd status` | 显示守护进程及所有服务状态 |
 | `deployd logs [服务名] [-f]` | 查看日志，加 `-f` 实时跟踪 |
 | `deployd deploy <名称> [-c 路径]` | 手动触发指定服务的完整部署流程（别名 `dep`） |
+| `deployd cancel <名称>` | 取消该服务进行中的部署/启动（`deploy`/webhook/`svc -s`/`svc -r` 均可取消） |
 | `deployd config` | 交互式配置向导 |
 
 #### 服务生命周期命令
 
 | 命令 | 描述 |
 |------|------|
-| `deployd svc <名称> -s` | 启动服务（不重新构建） |
+| `deployd svc <名称> -s` | 启动服务（不重新构建，**后台执行**） |
 | `deployd svc <名称> -t` | 停止服务 |
-| `deployd svc <名称> -r` | 重启服务（不重新构建，不重复归位/迁移） |
+| `deployd svc <名称> -r` | 重启服务（不重新构建，不重复归位/迁移，**后台执行**） |
 | `deployd svc <名称>` | 查看服务状态 |
 | `deployd service start/stop/restart <名称>` | 长形式，等价于上面的短旗标 |
 
 > 服务生命周期命令只做进程操作，不触发构建；完整流程用 `deploy`。
 > **static 类型没有独立进程**，`-s/-t/-r` 会被明确拒绝，重新发布请用 `deploy`。
+> `-s`/`-r` **非阻塞**：命令立即返回，启动在后台进行（期间状态为"启动中"，health 通过才转"运行"）。用 `deployd status` 或 `deployd svc <名称>` 查进度；卡住可用 `deployd cancel <名称>` 取消。
+
+#### 服务状态与颜色
+
+`deployd status` / `deployd svc <名称>` 输出的服务状态共五种（终端里带颜色，重定向到文件时为纯文本）：
+
+| 状态 | 颜色 | 含义 |
+|------|------|------|
+| `starting`（启动中） | 蓝色 | 部署/启动/重启正在就绪门控阶段（health 轮询中） |
+| `running`（运行中） | 绿色 | health 探测通过（或进程存活） |
+| `stopped`（已停止） | 灰色 | 进程/容器不存在，或 health 探测失败 |
+| `start_failed`（启动失败） | 红色 | 上次启动未通过就绪门控（超时/进程早退），**粘性**：直到下次 deploy/start/restart 成功才转绿 |
+| `unknown` | 暗黄色 | 探测异常（配置缺失、命令失败等） |
+
+> 同一服务同一时刻只允许一个部署/启动操作（文件锁）；`starting` 期间再发 deploy/svc start 会被拒绝，避免并发写状态。
+> `svc -t` 停止成功后状态回到 `stopped`（清除 start_failed）。
 
 #### 配置文件优先级
 
@@ -165,7 +185,9 @@ cp config.yaml.example config.yaml   # 模板内含全部五种模型的带注�
 | `services[].repo.url` / `.branch` | Git 仓库地址（HTTPS 自动转 SSH）/ 分支 | `"main"` |
 | `services[].workspace` | 代码克隆和工作目录 | `"/opt/deployd/apps/my-app"` |
 | `services[].build.command` | 构建命令，支持单条字符串或命令列表 | `"mvn package -DskipTests"` |
-| `services[].timeout` | fetch + build + stage 的**总超时**（三阶段共享一个计时，非每阶段各 30m；Go duration 语法），默认 `30m` | `"45m"` |
+| `services[].timeout` | fetch + build + stage + **就绪等待**的**总超时**（全流程共享一个计时，非每阶段各 30m；Go duration 语法），默认 `30m` | `"45m"` |
+| `services[].deploy.health` | **所有模型必填**：HTTP 健康检查 URL。既是部署成功的就绪判定（轮询直到 2xx/3xx），也是 `status` 的实时探测依据 | `"http://localhost:8080/health"` |
+| `services[].deploy.health_interval` | 就绪轮询间隔，默认 `10s`（Go duration 语法）。无需单独的健康检查超时--就绪等待共享 `timeout` 总预算 | `"5s"` |
 
 ### 各模型 `deploy:` 策略配置
 
@@ -173,9 +195,11 @@ cp config.yaml.example config.yaml   # 模板内含全部五种模型的带注�
 
 ```yaml
 deploy:
-  # artifact: "target/*.jar"   # 可选：产物 glob。不填=原地启动(run 写 target/xxx.jar)
+  # artifact: "target/*.jar"   # 可选：产物 glob 或列表。不填=原地启动(run 写 target/xxx.jar)
   # dest: "/opt/app"           # 可选：归位目录。填了才拷贝；run 也会在该目录下执行
   run: "java -jar hello-world-0.0.1.jar"   # 纯启动，不要写 nohup/&（后台化由工具负责）
+  health: "http://localhost:8080/health"   # 必填：就绪判定与 status 探测共用
+  # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
   env: { JAVA_OPTS: "-Xms100m" }           # 可选：运行时环境变量
 ```
 
@@ -188,7 +212,8 @@ deploy:
   artifact: "dist"                         # 构建产物（目录或 glob，见下）
   dest: "/usr/share/nginx/html/app"        # 拷贝到 nginx 目录
   nginx_reload: true                       # 拷贝后执行 nginx -s reload
-  health: "https://app.example.com/health" # status 通过健康检查 URL 判定
+  health: "https://app.example.com/health" # 必填：就绪判定与 status 探测共用
+  # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
 ```
 
 **artifact 语义**（jvm/static/node 通用，嵌套目录会递归拷贝）：
@@ -198,6 +223,7 @@ deploy:
 | `dist` / `dist/` | 目录**内容**整体拷贝到 dest 根（static 前端推荐） |
 | `dist/*` | 每个匹配项拷到 dest 根：文件平铺，子目录保持 `dest/<目录名>/` |
 | `target/*.jar` | 文件 glob（jvm 常规用法），自动跳过 `*.original.jar` |
+| `["hello1.txt", "test.json"]` | **列表写法**：多个具体文件/多个 glob，各项独立解析后统一平铺到 dest 根 |
 
 > 不支持 `**`（Go 标准库无 doublestar 语义）。
 
@@ -206,6 +232,7 @@ deploy:
 ```yaml
 deploy:
   run: "node server.js"            # 源码即产物(默认)：不配 artifact，在 workspace 启动
+  health: "http://localhost:3000/health"   # 必填：就绪判定与 status 探测共用
   env: { NODE_ENV: "production" }
   # 归位模式(可选)：把构建产物拷到 dest，run 在 dest 执行，与下次构建互不干扰
   # artifact: ".output"          # 产物目录/glob(如 Nuxt 的 .output)，语义同 jvm/static
@@ -221,6 +248,7 @@ deploy:
   venv: ".venv"                              # 可选：其 bin 自动前置 PATH
   migrate: ".venv/bin/alembic upgrade head"  # 可选：迁移(部署专属,重启不执行)
   run: ".venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"
+  health: "http://localhost:8000/health"    # 必填：就绪判定与 status 探测共用
   env: { DATABASE_URL: "..." }
 ```
 
@@ -234,13 +262,15 @@ deploy:
   env: { FOO: "bar" }
   volumes: ["/data:/data"]
   # args: ["--memory=512m"]     # 额外 docker run 参数
+  health: "http://localhost:8000/health"    # 必填：就绪判定与 status 探测共用
 ```
 
 ### 命令执行注意事项
 
 - **命令经 `sh -c` 执行**，`&&`、`||`、`|`、`>`、`$VAR` 等 shell 语义均可使用
 - **命令环境继承自 daemon 启动者**（非登录非交互 shell，不加载 `~/.bash_profile`）：谁启动 `deployd`，构建环境就是谁的。需要自定义函数/别名时在命令列表里显式加载：`[". ~/.bash_profile", "your_func ..."]`（用 `.` 而非 `source`，后者在 Ubuntu 的 dash 下不可用）
-- **fetch/build/stage 有超时保护**：`timeout` 是三阶段**总超时**（共享一个计时，默认 30m，非每阶段各 30m），任一阶段超时即杀整个进程组（不会留下 mvn 孤儿），部署失败会发邮件
+- **fetch/build/stage/就绪等待有超时保护**：`timeout` 是全流程**总超时**（共享一个计时，默认 30m，非每阶段各 30m），任一阶段超时即杀整个进程组（不会留下 mvn 孤儿），部署失败会发邮件
+- **部署成功以就绪为准**：启动命令执行后还要轮询 `deploy.health`（间隔 `health_interval`，默认 10s）直到返回 2xx/3xx 才算部署成功、才发成功邮件；就绪等待计入 `timeout` 总预算，超时未就绪则记 `start_failed` 并发失败邮件
 - **build** 支持三种写法；在 `workspace` 下执行：
 
 ```yaml

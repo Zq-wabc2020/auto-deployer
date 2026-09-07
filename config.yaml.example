@@ -37,16 +37,16 @@ services:
       url: "https://github.com/user/repo.git"   # Git 仓库地址（HTTPS 会自动转 SSH）
       branch: "main"                            # 部署分支
     workspace: "/opt/deployd/apps/my-springboot-app"   # 代码克隆与工作目录
-    timeout: "45m"                  # 可选：fetch+build+stage 总超时(默认 30m，所有模型通用)
+    timeout: "45m"                  # 可选：fetch+build+stage+就绪 总超时(默认 30m，所有模型通用)
     build:
       command: "mvn package -DskipTests"        # 通用：构建命令(shell)，支持 && 或列表形式
       # command: ["npm ci", "npm run build"]    #   列表形式：依次执行
     deploy:                         # jvm 策略层（结构由 type=jvm 决定）
-      # artifact: "target/*.jar"   # 可选：产物 glob。不填=原地启动(run 里写 target/xxx.jar 相对路径)
+      # artifact: "target/*.jar"   # 可选：产物 glob 或列表(如 ["a.jar","b.jar"])。不填=原地启动(run 里写 target/xxx.jar 相对路径)
       # dest: "/opt/app"           # 可选：产物归位目录。填了才拷贝(替代旧 moveJarToRoot 行为)
       run: "java -jar target/app.jar"           # 纯启动命令，不要写 nohup/&（后台化由工具负责）
       health: "http://localhost:8080/health"   # 必填：HTTP 健康检查 URL（就绪轮询/status 判定，所有模型通用）
-      # health_interval: "10s"                 # 可选：轮询间隔(默认 10s)
+      # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
       # env:                        # 可选：运行时环境变量
       #   JAVA_OPTS: "-Xms100m -Xmx128m"
 
@@ -57,14 +57,15 @@ services:
   #     url: "https://github.com/user/vue-app.git"
   #     branch: "main"
   #   workspace: "/opt/web-vue"
-  #   timeout: "45m"                       #   可选：fetch+build+stage 总超时(默认 30m，所有模型通用)
+  #   timeout: "45m"                       #   可选：fetch+build+stage+就绪 总超时(默认 30m，所有模型通用)
   #   build:
   #     command: "npm run build"
   #   deploy:
-  #     artifact: "dist"                          # 构建产物目录（内容整体拷贝；也可用 glob 如 dist/*）
+  #     artifact: "dist"                          # 构建产物目录或 glob（内容整体拷贝）；也支持列表如 ["dist/index.html","dist/app.js"]
   #     dest: "/usr/share/nginx/html/vue"        # 拷贝到 nginx 目录
   #     nginx_reload: true                       # 部署后执行 nginx -s reload
-  #     health: "https://app.example.com/health" # status 通过健康检查 URL 判定(HTTP 2xx/3xx=running)
+  #     health: "https://app.example.com/health" # 必填：就绪判定/status 均通过该 URL(HTTP 2xx/3xx=running)
+  #     # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
 
   # ── node：Next.js SSR / Express 等长驻 Node 服务 ──
   # 源码即产物(默认)：不配 artifact，run 直接在 workspace 启动(node server.js)。
@@ -76,9 +77,11 @@ services:
   #   workspace: "/opt/web-ssr"
   #   build: { command: "npm run build" }
   #   deploy:
-  #     # artifact: ".output"            # 可选：产物目录/glob。不填=源码即产物(原地启动)
+  #     # artifact: ".output"            # 可选：产物目录/glob 或列表。不填=源码即产物(原地启动)
   #     # dest: "/opt/web-ssr-run"       # 可选：归位目录。填了才拷贝，run 也在该目录执行
   #     run: "node .output/server.mjs"   # 纯启动命令，不要写 nohup/&/pm2(后台化由工具负责)
+  #     health: "http://localhost:3000/health"  # 必填：就绪判定/status 均通过该 URL
+  #     # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
   #     env: { NODE_ENV: "production" }
 
   # ── python：FastAPI/Flask 等 ASGI/WSGI 服务 ──
@@ -94,6 +97,8 @@ services:
   #     venv: ".venv"                             # 虚拟环境目录
   #     migrate: ".venv/bin/alembic upgrade head" # 可选：迁移(部署专属,不随重启执行)
   #     run: ".venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"
+  #     health: "http://localhost:8000/health"    # 必填：就绪判定/status 均通过该 URL
+  #     # health_interval: "10s"                  # 可选：就绪轮询间隔(默认 10s)
   #     env: { DATABASE_URL: "postgresql://..." }   # 可选：运行时环境变量
 
   # ── docker：容器化服务 ──
@@ -109,3 +114,5 @@ services:
   #     env: { FOO: "bar" }                       # 可选：容器环境变量
   #     volumes: ["/data:/data"]                  # 可选：数据卷挂载
   #     args: ["--memory=512m"]                   # 可选：额外 docker run 参数
+  #     health: "http://localhost:8000/health"    # 必填：就绪判定/status 均通过该 URL
+  #     # health_interval: "10s"                  # 可选：就绪轮询间隔(默认 10s)
