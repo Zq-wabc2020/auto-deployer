@@ -194,3 +194,22 @@ func TestAliveForMissingPidDirect(t *testing.T) {
 		t.Fatal("expected not alive")
 	}
 }
+
+// TestStartShellMissingDirClearError verifies that starting with a nonexistent
+// run dir reports the missing dir explicitly. Without this check Go reports the
+// confusing "fork/exec /usr/bin/sh: no such file or directory" (the child's
+// chdir failure masquerades as an exec failure), which e2e case6 surfaced.
+func TestStartShellMissingDirClearError(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "x.pid")
+	m := NewManager(pidFile)
+	m.SetOutput(io.Discard)
+
+	err := m.StartShell(filepath.Join(dir, "does-not-exist"), "sleep 5", nil, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for missing run dir")
+	}
+	if !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("error should name the missing dir, got: %v", err)
+	}
+}

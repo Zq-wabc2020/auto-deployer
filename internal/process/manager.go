@@ -88,6 +88,12 @@ func (m *Manager) StartShell(dir, command string, envOverrides map[string]string
 
 	cmd := exec.Command("sh", "-c", command)
 	if dir != "" {
+		// 先检查运行目录：不存在时 Go 只会报误导性的
+		// "fork/exec /usr/bin/sh: no such file or directory"（子进程 chdir
+		// 失败被当成 exec 失败），这里显式报出缺失目录。
+		if _, err := os.Stat(dir); err != nil {
+			return fmt.Errorf("run dir %s does not exist (deploy first?): %w", dir, err)
+		}
 		cmd.Dir = dir
 	}
 	// App runtime stdout/stderr discarded (log approach A): the service log
