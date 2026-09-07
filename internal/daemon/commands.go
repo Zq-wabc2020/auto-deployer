@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
+	"github.com/auto-deployer/auto-deployer/internal/deploy"
 	"github.com/auto-deployer/auto-deployer/internal/notify"
 	"github.com/auto-deployer/auto-deployer/internal/process"
+	"github.com/auto-deployer/auto-deployer/internal/registry"
 )
 
 const defaultPidDir = ".deployd/run"
@@ -49,10 +51,17 @@ func Status(configPath string) error {
 		return err
 	}
 
-	for _, svc := range cfg.Services {
-		svcPIDFile := filepath.Join(homeDir(configPath), defaultPidDir, svc.Name+".pid")
-		svcMgr := process.NewManager(svcPIDFile)
-		fmt.Printf("  %-30s %s\n", svc.Name, svcMgr.Status())
+	// 服务状态走 GetServiceStatusRich（starting/start_failed 持久态 + 插件实时探测），
+	// 不再直读 pid 文件——static 这类无进程模型会恒报 stopped（C2）。
+	for i := range cfg.Services {
+		svc := &cfg.Services[i]
+		st := "unknown"
+		if d, err := registry.Get(svc.Type); err == nil {
+			if s, err := deploy.GetServiceStatusRich(context.Background(), svc, d); err == nil {
+				st = s
+			}
+		}
+		fmt.Printf("  %-30s %s\n", svc.Name, st)
 	}
 
 	return nil
