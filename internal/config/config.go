@@ -135,6 +135,104 @@ func (s ServiceConfig) TimeoutDuration() (time.Duration, error) {
 	return d, nil
 }
 
+// StageConfig 是流水线的一个节点：以某组件类型执行，params 是组件入参
+// （string 值在执行期做 ${...} 插值，非 string 值如 git 的 branch 列表原样透传）。
+// When: ""=主流程 / "failure"=主流程失败时执行 / "always"=无论成败执行。
+type StageConfig struct {
+	Name    string            `yaml:"name"`
+	Type    string            `yaml:"type"`
+	Params  map[string]any    `yaml:"params"`
+	Output  map[string]string `yaml:"output"`
+	Skip    string            `yaml:"skip"`
+	When    string            `yaml:"when"`
+	Timeout string            `yaml:"timeout"`
+}
+
+func (s StageConfig) TimeoutDuration() (time.Duration, error) {
+	if s.Timeout == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s.Timeout)
+	if err != nil {
+		return 0, fmt.Errorf("invalid stage timeout %q: %w", s.Timeout, err)
+	}
+	return d, nil
+}
+
+// PipelineConfig 是一个工作项：任意数量节点组成的流水线模板。
+// TriggerURL/TriggerBranches 在加载期从第一个 git 节点提取，供 webhook 匹配；
+// 无 git 节点的工作项只能手动 exec。
+type PipelineConfig struct {
+	Name      string            `yaml:"name"`
+	Workspace string            `yaml:"workspace"`
+	Timeout   string            `yaml:"timeout"`
+	Env       map[string]string `yaml:"env"`
+	Stages    []StageConfig     `yaml:"stages"`
+
+	TriggerURL      string   `yaml:"-"`
+	TriggerBranches []string `yaml:"-"`
+}
+
+func (p PipelineConfig) TimeoutDuration() (time.Duration, error) {
+	if p.Timeout == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(p.Timeout)
+	if err != nil {
+		return 0, fmt.Errorf("invalid timeout %q: %w", p.Timeout, err)
+	}
+	return d, nil
+}
+
+// ExtractTrigger 从第一个 type==git 的节点提取 webhook 匹配用的 url/branch。
+// 两项必须是字面量：匹配发生在配置加载期，那时还没有可插值的参数集。
+func (p *PipelineConfig) ExtractTrigger() error {
+	for _, st := range p.Stages {
+		if st.Type != "git" {
+			continue
+		}
+		url, _ := st.Params["url"].(string)
+		if strings.Contains(url, "${") {
+			return fmt.Errorf("pipeline %q: git 节点的 url 必须是字面量（webhook 匹配用），当前 %q", p.Name, url)
+		}
+		p.TriggerURL = url
+		for _, b := range asAnyList(st.Params["branch"]) {
+			if strings.Contains(b, "${") {
+				return fmt.Errorf("pipeline %q: git 节点的 branch 必须是字面量，当前 %q", p.Name, b)
+			}
+			p.TriggerBranches = append(p.TriggerBranches, b)
+		}
+		return nil
+	}
+	return nil
+}
+
+func asAnyList(v any) []string {
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// FindPipeline 按名查找工作项；找不到返回 nil。
+func FindPipeline(cfg *AppConfig, name string) *PipelineConfig {
+	for i := range cfg.Pipelines {
+		if cfg.Pipelines[i].Name == name {
+			return &cfg.Pipelines[i]
+		}
+	}
+	return nil
+}
+
 type AppConfig struct {
 	Server        ServerConfig       `yaml:"server"`
 	Webhook       WebhookConfig      `yaml:"webhook"`
@@ -142,6 +240,7 @@ type AppConfig struct {
 	Resend        ResendConfig       `yaml:"resend"`
 	Notifications NotificationConfig `yaml:"notifications"`
 	Services      []ServiceConfig    `yaml:"services"`
+	Pipelines     []PipelineConfig   `yaml:"pipelines"`
 }
 
 func Load(path string) (*AppConfig, error) {
@@ -157,6 +256,11 @@ func Load(path string) (*AppConfig, error) {
 	warnLegacyRunField(data)
 	warnLegacyBuildTimeout(data)
 	parseCommonDeployFields(&cfg)
+	for i := range cfg.Pipelines {
+		if err := cfg.Pipelines[i].ExtractTrigger(); err != nil {
+			return nil, err
+		}
+	}
 	return &cfg, nil
 }
 
