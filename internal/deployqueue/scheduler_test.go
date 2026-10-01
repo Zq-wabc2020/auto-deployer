@@ -35,12 +35,12 @@ func TestSchedulerCoalesces(t *testing.T) {
 	s := NewScheduler(exec)
 
 	// Task A starts and blocks (deploy in progress).
-	s.Submit(Task{ServiceName: "svc", AuthorEmail: "a@x.com", Branch: "main", Source: "webhook"})
+	s.Submit(Task{PipelineName: "svc", AuthorEmail: "a@x.com", Branch: "main", Source: "webhook"})
 	<-started // exec(A) now blocking on <-proceed
 
 	// Tasks B and C arrive while A is still deploying.
-	s.Submit(Task{ServiceName: "svc", AuthorEmail: "b@x.com", Branch: "main", Source: "webhook"})
-	s.Submit(Task{ServiceName: "svc", AuthorEmail: "c@x.com", Branch: "main", Source: "webhook"})
+	s.Submit(Task{PipelineName: "svc", AuthorEmail: "b@x.com", Branch: "main", Source: "webhook"})
+	s.Submit(Task{PipelineName: "svc", AuthorEmail: "c@x.com", Branch: "main", Source: "webhook"})
 
 	// Finish A: the processor should coalesce B+C into C (discard B).
 	proceed <- struct{}{}
@@ -81,7 +81,7 @@ func TestSchedulerDifferentServicesParallel(t *testing.T) {
 
 	exec := func(ctx context.Context, task Task, recipients []string) error {
 		mu.Lock()
-		calls[task.ServiceName]++
+		calls[task.PipelineName]++
 		mu.Unlock()
 		started <- struct{}{}
 		<-proceed
@@ -89,8 +89,8 @@ func TestSchedulerDifferentServicesParallel(t *testing.T) {
 	}
 
 	s := NewScheduler(exec)
-	s.Submit(Task{ServiceName: "svc-a", AuthorEmail: "a@x.com", Source: "webhook"})
-	s.Submit(Task{ServiceName: "svc-b", AuthorEmail: "b@x.com", Source: "webhook"})
+	s.Submit(Task{PipelineName: "svc-a", AuthorEmail: "a@x.com", Source: "webhook"})
+	s.Submit(Task{PipelineName: "svc-b", AuthorEmail: "b@x.com", Source: "webhook"})
 
 	// Both should start without waiting on each other.
 	<-started

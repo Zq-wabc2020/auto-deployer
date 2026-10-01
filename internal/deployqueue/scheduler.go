@@ -22,11 +22,13 @@ import (
 
 // Task represents a deploy request submitted to the queue.
 type Task struct {
-	ServiceName string
-	Branch      string
-	RepoURL     string
-	AuthorEmail string // operator: webhook commit author; "" for manual
-	Source      string // "webhook" | "manual"
+	PipelineName string
+	Branch       string
+	RepoURL      string
+	AuthorEmail  string // operator: webhook commit author; "" for manual
+	Commit       string
+	Message      string
+	Source       string // "github" | "gitee" | "manual"
 }
 
 // ExecFunc executes a deploy for the given task with the merged operator emails
@@ -53,7 +55,7 @@ func NewScheduler(exec ExecFunc) *Scheduler {
 // Submit enqueues a deploy task for the service. Non-blocking: if the
 // per-service buffer is full the task is dropped with a log warning.
 func (s *Scheduler) Submit(task Task) {
-	s.getOrCreate(task.ServiceName).submit(task)
+	s.getOrCreate(task.PipelineName).submit(task)
 }
 
 // Pending returns the number of tasks queued (not yet executing) for a service.
@@ -87,9 +89,9 @@ type serviceQueue struct {
 func (q *serviceQueue) submit(task Task) {
 	select {
 	case q.ch <- task:
-		logger.GetServiceLogger(task.ServiceName).Printf("[queue] 任务入队，待处理 %d", len(q.ch))
+		logger.GetServiceLogger(task.PipelineName).Printf("[queue] 任务入队，待处理 %d", len(q.ch))
 	default:
-		logger.GetServiceLogger(task.ServiceName).Printf(
+		logger.GetServiceLogger(task.PipelineName).Printf(
 			"[queue] 队列已满，丢弃任务 (branch %s, by %s, via %s)",
 			task.Branch, opLabel(task), task.Source)
 	}
@@ -102,9 +104,9 @@ func (q *serviceQueue) submit(task Task) {
 func (q *serviceQueue) run() {
 	for {
 		first := <-q.ch
-		lock, err := deploylock.Acquire(first.ServiceName)
+		lock, err := deploylock.Acquire(first.PipelineName)
 		if err != nil {
-			logger.GetServiceLogger(first.ServiceName).Printf("[queue] 获取部署锁失败: %v", err)
+			logger.GetServiceLogger(first.PipelineName).Printf("[queue] 获取部署锁失败: %v", err)
 			continue
 		}
 		q.processWithLock(first, lock)
@@ -120,7 +122,7 @@ func (q *serviceQueue) processWithLock(first Task, lock *deploylock.Lock) {
 		tasks := drain(q.ch, current)
 		latest := tasks[len(tasks)-1]
 		discarded := tasks[:len(tasks)-1]
-		log := logger.GetServiceLogger(latest.ServiceName)
+		log := logger.GetServiceLogger(latest.PipelineName)
 		log.Printf("[queue] 开始执行 (合并 %d 个任务，丢弃 %d)", len(tasks), len(discarded))
 		for _, d := range discarded {
 			log.Printf("[queue] 跳过部署 (branch %s, by %s, via %s) - 合并到更新任务",

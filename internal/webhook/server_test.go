@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -155,32 +156,43 @@ func TestDetectSource_Gitee(t *testing.T) {
 	}
 }
 
-func TestMatchServices_MultipleMatches(t *testing.T) {
-	services := []config.ServiceConfig{
-		{Name: "other", Repo: config.RepoConfig{URL: "git@github.com:u/other.git", Branch: "main"}},
-		{Name: "backend", Repo: config.RepoConfig{URL: "https://github.com/u/repo.git", Branch: "main"}},
-		{Name: "frontend", Repo: config.RepoConfig{URL: "git@github.com:u/repo.git", Branch: "main"}},
-		{Name: "wrong-branch", Repo: config.RepoConfig{URL: "git@github.com:u/repo.git", Branch: "dev"}},
+func TestMatchPipelines(t *testing.T) {
+	pipelines := []config.PipelineConfig{
+		{Name: "app", TriggerURL: "https://github.com/u/r.git", TriggerBranches: []string{"main"}},
+		{Name: "app-glob", TriggerURL: "https://github.com/u/r.git", TriggerBranches: []string{"release/*"}},
+		{Name: "other-repo", TriggerURL: "https://github.com/u/other.git", TriggerBranches: []string{"main"}},
+		{Name: "manual-only", TriggerURL: "", TriggerBranches: nil}, // 无 git 节点
 	}
-	result := &DispatchResult{RepoURL: "https://github.com/u/repo.git", Branch: "main"}
-
-	matched := MatchServices(services, result)
-	var names []string
-	for _, m := range matched {
-		names = append(names, m.Name)
+	cases := []struct {
+		branch string
+		want   []string
+	}{
+		{"main", []string{"app"}},             // 精确命中
+		{"release/1.2", []string{"app-glob"}}, // glob 命中
+		{"dev", nil},                          // 无命中
 	}
-	if len(matched) != 2 || names[0] != "backend" || names[1] != "frontend" {
-		t.Errorf("expected [backend frontend], got %v", names)
+	for _, c := range cases {
+		got := MatchPipelines(pipelines, &DispatchResult{
+			RepoURL: "https://github.com/u/r.git", Branch: c.branch,
+		})
+		var names []string
+		for _, p := range got {
+			names = append(names, p.Name)
+		}
+		if fmt.Sprint(names) != fmt.Sprint(c.want) {
+			t.Errorf("branch=%s got %v want %v", c.branch, names, c.want)
+		}
 	}
 }
 
-func TestMatchServices_None(t *testing.T) {
-	services := []config.ServiceConfig{
-		{Name: "a", Repo: config.RepoConfig{URL: "git@github.com:u/other.git", Branch: "main"}},
+func TestParsePayloadCommitMessage(t *testing.T) {
+	body := []byte(`{"ref":"refs/heads/main","repository":{"clone_url":"https://github.com/u/r.git"},
+		"commits":[{"id":"abc123def","message":"fix: something","author":{"email":"a@b.c"}}]}`)
+	res, err := ParsePayload(body, "github")
+	if err != nil {
+		t.Fatal(err)
 	}
-	result := &DispatchResult{RepoURL: "https://github.com/u/repo.git", Branch: "main"}
-
-	if matched := MatchServices(services, result); len(matched) != 0 {
-		t.Errorf("expected no match, got %d", len(matched))
+	if res.Commit != "abc123def" || res.Message != "fix: something" || res.AuthorEmail != "a@b.c" {
+		t.Fatalf("res=%+v", res)
 	}
 }

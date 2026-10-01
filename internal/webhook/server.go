@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/auto-deployer/auto-deployer/internal/build"
 	"github.com/auto-deployer/auto-deployer/internal/config"
-	"github.com/auto-deployer/auto-deployer/internal/deploy"
 	"github.com/auto-deployer/auto-deployer/internal/deployqueue"
-	"github.com/auto-deployer/auto-deployer/internal/registry"
+	"github.com/auto-deployer/auto-deployer/internal/pipeline"
 )
 
 // GitHubPushPayload represents a GitHub push webhook event.
@@ -36,10 +36,11 @@ type GiteePushPayload struct {
 
 // DispatchResult contains the parsed dispatch information from a webhook payload.
 type DispatchResult struct {
-	ServiceName  string
-	Branch       string
-	RepoURL      string
-	AuthorEmail  string
+	Branch      string
+	RepoURL     string
+	AuthorEmail string
+	Commit      string
+	Message     string
 }
 
 // GitSignature represents author/committer info from a webhook commit.
@@ -50,6 +51,8 @@ type GitSignature struct {
 
 // GitHubCommit represents a commit in a GitHub/Gitee push payload.
 type GitHubCommit struct {
+	ID        string       `json:"id"`
+	Message   string       `json:"message"`
 	Author    GitSignature `json:"author"`
 	Committer GitSignature `json:"committer"`
 }
@@ -77,7 +80,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("[webhook] received %s push to %s/%s\n", source, result.RepoURL, result.Branch)
 
-	// Match against configured services
+	// Match against configured pipelines
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Printf("[webhook] config error: %v\n", err)
@@ -86,37 +89,32 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matched := MatchServices(cfg.Services, result)
+	matched := MatchPipelines(cfg.Pipelines, result)
 	if len(matched) == 0 {
-		fmt.Printf("[webhook] no service matched for %s/%s\n", result.RepoURL, result.Branch)
+		fmt.Printf("[webhook] no pipeline matched for %s/%s\n", result.RepoURL, result.Branch)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 		return
 	}
 
-	// Every matching service gets its own queue entry: the same repo+branch
-	// may feed multiple services (e.g. a jvm backend and a static frontend
-	// from one monorepo branch), and coalescing is per-service, so they
+	// Every matching pipeline gets its own queue entry: the same repo+branch
+	// may feed multiple pipelines (e.g. a jvm backend and a static frontend
+	// from one monorepo branch), and coalescing is per-pipeline, so they
 	// deploy independently without merging into each other.
 	for _, m := range matched {
-		fmt.Printf("[webhook] matched service: %s\n", m.Name)
+		fmt.Printf("[webhook] matched pipeline: %s\n", m.Name)
 
-		// Validate service type up front so a misconfigured service doesn't
-		// keep queuing undeployable tasks.
-		if _, err := registry.Get(m.Type); err != nil {
-			fmt.Printf("[webhook] unknown service type: %s\n", m.Type)
-			continue
-		}
-
-		// Submit to the per-service coalescing queue. The queue serializes
-		// same-service deploys and merges rapid triggers; ExecuteDeploy runs
+		// Submit to the per-pipeline coalescing queue. The queue serializes
+		// same-pipeline deploys and merges rapid triggers; ExecutePipeline runs
 		// the pipeline.
 		task := deployqueue.Task{
-			ServiceName: m.Name,
-			Branch:      result.Branch,
-			RepoURL:     result.RepoURL,
-			AuthorEmail: result.AuthorEmail,
-			Source:      source,
+			PipelineName: m.Name,
+			Branch:       result.Branch,
+			RepoURL:      result.RepoURL,
+			AuthorEmail:  result.AuthorEmail,
+			Commit:       result.Commit,
+			Message:      result.Message,
+			Source:       source,
 		}
 		if scheduler != nil {
 			scheduler.Submit(task)
@@ -124,7 +122,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// Fallback when no scheduler is wired (e.g. tests): run directly.
 			go func(t deployqueue.Task) {
-				_ = ExecuteDeploy(context.Background(), t, []string{t.AuthorEmail})
+				_ = ExecutePipeline(context.Background(), t, []string{t.AuthorEmail})
 			}(task)
 			fmt.Printf("[webhook] %s deploy started (no queue)\n", m.Name)
 		}
@@ -146,6 +144,8 @@ func ParsePayload(body []byte, source string) (*DispatchResult, error) {
 			Branch:      branch,
 			RepoURL:     payload.Repository.CloneURL,
 			AuthorEmail: extractAuthorEmail(payload.Commits),
+			Commit:      extractCommit(payload.Commits),
+			Message:     extractMessage(payload.Commits),
 		}, nil
 
 	case "gitee":
@@ -158,6 +158,8 @@ func ParsePayload(body []byte, source string) (*DispatchResult, error) {
 			Branch:      branch,
 			RepoURL:     payload.Repository.GitHTTPURL,
 			AuthorEmail: extractAuthorEmail(payload.Commits),
+			Commit:      extractCommit(payload.Commits),
+			Message:     extractMessage(payload.Commits),
 		}, nil
 
 	default:
@@ -177,18 +179,40 @@ func extractAuthorEmail(commits []GitHubCommit) string {
 	return commits[0].Committer.Email
 }
 
-// MatchServices returns ALL services whose repo URL and branch match the
-// dispatch result, normalizing both URLs to SSH format for comparison. The
-// same repo+branch may legitimately feed several services (monorepo), and
-// each match deploys through its own per-service queue.
-func MatchServices(services []config.ServiceConfig, result *DispatchResult) []*config.ServiceConfig {
-	configURL := build.HTTPSToSSH(result.RepoURL)
-	var matched []*config.ServiceConfig
-	for i := range services {
-		svc := &services[i]
-		svcURL := build.HTTPSToSSH(svc.Repo.URL)
-		if svcURL == configURL && svc.Repo.Branch == result.Branch {
-			matched = append(matched, svc)
+// extractCommit 返回第一个 commit 的 id（GitHub/Gitee 同构字段）。
+func extractCommit(commits []GitHubCommit) string {
+	if len(commits) == 0 {
+		return ""
+	}
+	return commits[0].ID
+}
+
+// extractMessage 返回第一个 commit 的提交说明。
+func extractMessage(commits []GitHubCommit) string {
+	if len(commits) == 0 {
+		return ""
+	}
+	return commits[0].Message
+}
+
+// MatchPipelines 返回 URL（双方 HTTPSToSSH 归一化）与 branch（path.Match，
+// 无通配符即精确）命中的所有工作项——monorepo 一 push 多工作项各自独立入队。
+func MatchPipelines(pipelines []config.PipelineConfig, result *DispatchResult) []*config.PipelineConfig {
+	pushURL := build.HTTPSToSSH(result.RepoURL)
+	var matched []*config.PipelineConfig
+	for i := range pipelines {
+		p := &pipelines[i]
+		if p.TriggerURL == "" {
+			continue // 无 git 节点，仅手动
+		}
+		if build.HTTPSToSSH(p.TriggerURL) != pushURL {
+			continue
+		}
+		for _, pattern := range p.TriggerBranches {
+			if ok, _ := path.Match(pattern, result.Branch); ok {
+				matched = append(matched, p)
+				break
+			}
 		}
 	}
 	return matched
@@ -246,28 +270,22 @@ func SetScheduler(s *deployqueue.Scheduler) {
 	scheduler = s
 }
 
-// ExecuteDeploy is the scheduler's deploy executor: it loads the config, finds
-// the service by name, creates the deployer, and runs the pipeline with the
-// merged operator emails as notification recipients.
-func ExecuteDeploy(ctx context.Context, task deployqueue.Task, operatorEmails []string) error {
+// ExecutePipeline is the scheduler's deploy executor: it loads the config, finds
+// the pipeline by name, and runs it with the merged operator emails as
+// notification recipients. A failed/cancelled run is recorded in the runstate
+// file by pipeline.Run itself, so only load/lookup errors are returned here.
+func ExecutePipeline(ctx context.Context, task deployqueue.Task, operatorEmails []string) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	var svc *config.ServiceConfig
-	for i := range cfg.Services {
-		if cfg.Services[i].Name == task.ServiceName {
-			svc = &cfg.Services[i]
-			break
-		}
+	pl := config.FindPipeline(cfg, task.PipelineName)
+	if pl == nil {
+		return fmt.Errorf("工作项 %s 不在配置中", task.PipelineName)
 	}
-	if svc == nil {
-		return fmt.Errorf("service %s not found in config", task.ServiceName)
-	}
-	deployer, err := registry.Get(svc.Type)
-	if err != nil {
-		return err
-	}
-	_, err = deploy.Deploy(ctx, svc, cfg, deployer, operatorEmails)
-	return err
+	pipeline.Run(ctx, pl, pipeline.Options{
+		Trigger: "webhook", Pushers: operatorEmails, Branch: task.Branch,
+		Commit: task.Commit, Author: task.AuthorEmail, Message: task.Message, Cfg: cfg,
+	})
+	return nil
 }

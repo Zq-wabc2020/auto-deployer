@@ -61,12 +61,12 @@ func Start(configPath string) error {
 	}
 
 	// 5. Create workspace directories and ensure git config
-	for _, svc := range cfg.Services {
-		if err := os.MkdirAll(svc.Workspace, 0755); err != nil {
-			return fmt.Errorf("failed to create workspace %s: %w", svc.Workspace, err)
+	for _, p := range cfg.Pipelines {
+		if err := os.MkdirAll(p.Workspace, 0755); err != nil {
+			return fmt.Errorf("failed to create workspace %s: %w", p.Workspace, err)
 		}
-		if err := build.EnsureGitConfig(svc.Workspace); err != nil {
-			fmt.Fprintf(os.Stderr, "[daemon] warning: failed to set git config in %s: %v\n", svc.Workspace, err)
+		if err := build.EnsureGitConfig(p.Workspace); err != nil {
+			fmt.Fprintf(os.Stderr, "[daemon] warning: failed to set git config in %s: %v\n", p.Workspace, err)
 		}
 	}
 
@@ -111,7 +111,7 @@ func Start(configPath string) error {
 	webhook.SetConfigPath(configPath)
 	// Per-service coalescing queue: serializes same-service webhook deploys and
 	// merges rapid triggers; manual deploys coordinate via the deploy file lock.
-	webhook.SetScheduler(deployqueue.NewScheduler(webhook.ExecuteDeploy))
+	webhook.SetScheduler(deployqueue.NewScheduler(webhook.ExecutePipeline))
 
 	http.HandleFunc("/webhook", webhook.Handle)
 
