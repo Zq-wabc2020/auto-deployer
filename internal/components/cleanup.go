@@ -32,7 +32,11 @@ func (Cleanup) Run(ctx context.Context, req Request) (Results, error) {
 	}
 	deleted := 0
 	for _, e := range entries {
-		if matchAny(e.Name(), keep) {
+		keepIt, err := matchAny(e.Name(), keep)
+		if err != nil {
+			return nil, err
+		}
+		if keepIt {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(ws, e.Name())); err != nil {
@@ -43,11 +47,15 @@ func (Cleanup) Run(ctx context.Context, req Request) (Results, error) {
 	return Results{"deleted": strconv.Itoa(deleted)}, nil
 }
 
-func matchAny(name string, patterns []string) bool {
+func matchAny(name string, patterns []string) (bool, error) {
 	for _, p := range patterns {
-		if ok, _ := filepath.Match(p, name); ok {
-			return true
+		ok, err := filepath.Match(p, name)
+		if err != nil {
+			return false, fmt.Errorf("keep 模式 %q 无效: %w", p, err)
+		}
+		if ok {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

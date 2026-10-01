@@ -63,6 +63,21 @@ func TestCleanupKeepGlob(t *testing.T) {
 	}
 }
 
+func TestCleanupBadKeepPattern(t *testing.T) {
+	ws := makeWs(t)
+	c, _ := Get("cleanup")
+	_, err := c.Run(context.Background(), Request{
+		Params: map[string]any{"workspace": ws, "keep": []any{"["}},
+		Out:    &bytes.Buffer{},
+	})
+	if err == nil {
+		t.Fatal("畸形 keep 模式必须报错而非静默误删")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "a.txt")); err != nil {
+		t.Fatal("报错时不得删除任何条目：a.txt 应仍存在")
+	}
+}
+
 func TestCleanupEmptyDir(t *testing.T) {
 	c, _ := Get("cleanup")
 	ws := t.TempDir() // 空目录（甚至不是 git 仓库）也不报错
