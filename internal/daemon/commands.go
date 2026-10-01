@@ -104,16 +104,54 @@ func Logs(serviceName, configPath, logFile string, tail int, follow bool) error 
 		}
 		fmt.Print(string(bytes.Join(lines, []byte("\n"))))
 	} else {
-		// 指定工作项且不带 -n/-f 时，默认从最后一次 run 的分节头开始打印；
-		// 日志里没有 "=== " 分节头（旧格式）则整文件打印，兼容历史日志。
+		// 指定工作项且不带 -n/-f 时，默认从最后一次 run 开始头打印；
+		// 旧格式日志无分节头则整文件打印，兼容历史日志。
 		if serviceName != "" && !follow && tail == 0 {
-			if idx := bytes.LastIndex(data, []byte("\n=== ")); idx >= 0 {
-				data = data[idx+1:] // 保留命中分节头开头的 "=== "
-			}
+			data = lastRunSection(data)
 		}
 		fmt.Print(string(data))
 	}
 	return nil
+}
+
+// lastRunSection 返回最后一次 run 开始头（含该行）到文件尾的分节。
+// 找不到 run 头（旧格式日志无分节头）则原样返回整个文件。
+func lastRunSection(data []byte) []byte {
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isRunStartLine(lines[i]) {
+			return bytes.Join(lines[i:], nil)
+		}
+	}
+	return data
+}
+
+// isRunStartLine 判断一行是否为 run 开始头。
+// 所有 Printf 行都带 "[<name>] <timestamp> " 前缀，run 开始头内容形如
+// "=== <开始时间戳> <name> [...] ==="（以 "=== 2" 开头，年份 2xxx），
+// 而 run 结束头以工作项名开头。要求 "=== 2" 之前是 "[name] <ts> " 前缀，
+// 避免把子进程输出里的 "=== 2" 误判为 run 头。
+func isRunStartLine(line []byte) bool {
+	const minPrefixLen = len("[a] 2000-01-01 00:00:00 ") // 最短合法 "[name] <ts> " 前缀
+	idx := bytes.Index(line, []byte("=== 2"))
+	if idx < minPrefixLen || line[0] != '[' {
+		return false
+	}
+	pre := line[:idx] // "[name] <timestamp> "
+	close := bytes.IndexByte(pre, ']')
+	if close < 2 || !bytes.HasSuffix(pre, []byte(" ")) {
+		return false
+	}
+	ts := bytes.TrimSpace(pre[close+2:])
+	if len(ts) != len("2000-01-01 00:00:00") {
+		return false
+	}
+	for _, c := range ts {
+		if c != '-' && c != ':' && c != ' ' && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // tailFollow tails a log file in real-time, optionally starting from line N.
