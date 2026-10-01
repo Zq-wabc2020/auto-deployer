@@ -104,6 +104,13 @@ func Logs(serviceName, configPath, logFile string, tail int, follow bool) error 
 		}
 		fmt.Print(string(bytes.Join(lines, []byte("\n"))))
 	} else {
+		// 指定工作项且不带 -n/-f 时，默认从最后一次 run 的分节头开始打印；
+		// 日志里没有 "=== " 分节头（旧格式）则整文件打印，兼容历史日志。
+		if serviceName != "" && !follow && tail == 0 {
+			if idx := bytes.LastIndex(data, []byte("\n=== ")); idx >= 0 {
+				data = data[idx+1:] // 保留命中分节头开头的 "=== "
+			}
+		}
 		fmt.Print(string(data))
 	}
 	return nil

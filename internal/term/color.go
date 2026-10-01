@@ -16,16 +16,16 @@ const (
 
 func colorFor(status string) string {
 	switch status {
-	case "starting":
-		return blue
 	case "running":
+		return blue
+	case "success":
 		return green
-	case "stopped":
-		return gray
-	case "start_failed":
+	case "failed":
 		return red
-	default: // unknown 等
+	case "cancelled", "unknown":
 		return yellow
+	default: // never / stopped / 其他
+		return gray
 	}
 }
 

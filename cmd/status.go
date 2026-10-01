@@ -1,15 +1,15 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
-	"github.com/auto-deployer/auto-deployer/internal/deploy"
 	"github.com/auto-deployer/auto-deployer/internal/process"
-	"github.com/auto-deployer/auto-deployer/internal/registry"
+	"github.com/auto-deployer/auto-deployer/internal/runstate"
+	"github.com/auto-deployer/auto-deployer/internal/term"
 	"github.com/spf13/cobra"
 )
 
@@ -20,48 +20,49 @@ func init() {
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show deployd and all services status",
+	Short: "查看所有工作项最后执行状态",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		home, _ := os.UserHomeDir()
+		mgr := process.NewManager(filepath.Join(home, ".deployd", "run", "deployd.pid"))
+		fmt.Printf("deployd: %s\n", mgr.Status())
+
 		path := configFile
 		if path == "" {
 			path = config.DefaultConfig()
 		}
-
-		// Check daemon status
-		home, _ := os.UserHomeDir()
-		pidFile := filepath.Join(home, ".deployd", "run", "deployd.pid")
-		mgr := process.NewManager(pidFile)
-		fmt.Printf("deployd: %s\n", mgr.Status())
-
 		if path == "" {
 			return nil
 		}
-
 		cfg, err := config.Load(path)
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
-
-		for i := range cfg.Services {
-			fmt.Printf("  %-30s %s\n", cfg.Services[i].Name, serviceStatus(&cfg.Services[i]))
+		for i := range cfg.Pipelines {
+			p := &cfg.Pipelines[i]
+			st := runstate.StaleRecover(p.Name) // running 且锁空 → 就地改写 failed
+			fmt.Printf("  %-30s %s\n", p.Name, pipelineStatusLine(st))
 		}
-
 		return nil
 	},
 }
 
-// serviceStatus reports a service's status through its deployment model --
-// pid file for process models, health URL for static, docker ps for docker.
-// Reading the pid file directly here would always show static as "stopped".
-// 状态串已由 GetServiceStatusRich 上色（非 TTY 时为纯文本），此处直接打印。
-func serviceStatus(svc *config.ServiceConfig) string {
-	d, err := registry.Get(svc.Type)
-	if err != nil {
-		return "unknown (" + err.Error() + ")"
+// pipelineStatusLine 拼一行状态摘要：彩色状态 + 触发方式 + 耗时 + commit + 失败节点。
+func pipelineStatusLine(st runstate.RunState) string {
+	if st.State == "" {
+		return term.Colorize("never") // 从未执行
 	}
-	st, err := deploy.GetServiceStatusRich(context.Background(), svc, d)
-	if err != nil {
-		return "unknown (" + err.Error() + ")"
+	line := term.Colorize(st.State)
+	if st.Trigger != "" {
+		line += "  " + st.Trigger
 	}
-	return st
+	if st.FinishedAt != nil {
+		line += "  " + st.FinishedAt.Sub(st.StartedAt).Round(time.Second).String()
+	}
+	if len(st.Commit) >= 7 {
+		line += "  " + st.Commit[:7]
+	}
+	if st.FailedStage != "" {
+		line += "  失败节点: " + st.FailedStage
+	}
+	return line
 }
