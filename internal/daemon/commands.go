@@ -11,7 +11,6 @@ import (
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploy"
-	"github.com/auto-deployer/auto-deployer/internal/notify"
 	"github.com/auto-deployer/auto-deployer/internal/process"
 	"github.com/auto-deployer/auto-deployer/internal/registry"
 )
@@ -165,86 +164,11 @@ func tailFollow(path string, tail int) error {
 	}
 }
 
-// TriggerDeploy manually triggers deployment for a service.
-func TriggerDeploy(serviceName, configPath string) error {
-	cfgPath := configPath
-	if cfgPath == "" {
-		cfgPath = filepath.Join(homeDir(configPath), "config.yaml")
-	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	var svc *config.ServiceConfig
-	for i := range cfg.Services {
-		if cfg.Services[i].Name == serviceName {
-			s := &cfg.Services[i]
-			svc = s
-			break
-		}
-	}
-	if svc == nil {
-		return fmt.Errorf("service %q not found in config", serviceName)
-	}
-
-	fmt.Printf("[deploy] triggering deployment for %s...\n", svc.Name)
-
-	// Build notifier and send "running" notification
-	notifier := buildNotifier(cfg, "")
-	if notifier != nil {
-		go func() {
-			_ = notifier.NotifyDeployResult(context.Background(), notify.DeployNotice{
-			ServiceName: svc.Name,
-			Branch:      svc.Repo.Branch,
-			Status:      "running",
-		})
-		}()
-	}
-
-	// TODO: full deploy flow — git pull → build → stop → start
-	fmt.Printf("[deploy] workspace: %s\n", svc.Workspace)
-	fmt.Printf("[deploy] build command: %s\n", svc.Build.Command.String())
-
-	// Send success notification (placeholder: deploy not yet implemented)
-	if notifier != nil {
-		go func() {
-			_ = notifier.NotifyDeployResult(context.Background(), notify.DeployNotice{
-			ServiceName: svc.Name,
-			Branch:      svc.Repo.Branch,
-			Status:      "success",
-		})
-		}()
-	}
-
-	return nil
-}
-
 func homeDir(_ string) string {
 	h, _ := os.UserHomeDir()
 	return h
 }
 
-// buildNotifier creates a Notifier from config.
-// Always includes authorEmail as the default recipient.
-// notifications.To are additional recipients appended to the list.
-// Returns nil only if no notification provider (SMTP or Resend) is configured.
-func buildNotifier(cfg *config.AppConfig, authorEmail string) *notify.Notifier {
-	hasSMTP := cfg != nil && cfg.SMTP.Host != ""
-	hasResend := cfg != nil && cfg.Resend.APIKey != ""
-	if !hasSMTP && !hasResend {
-		return nil
-	}
-	recipients := []string{authorEmail}
-	recipients = append(recipients, cfg.Notifications.To...)
-	return notify.New(
-		cfg.SMTP.Host,
-		cfg.SMTP.Port,
-		cfg.SMTP.Username,
-		cfg.SMTP.Token,
-		cfg.SMTP.TLS,
-		cfg.Resend.APIKey,
-		cfg.Resend.From,
-		recipients,
-	)
-}
+// TODO(Task 10): TriggerDeploy/buildNotifier（旧编排的占位通知逻辑）已随
+// notify.Send 按次传收件人的改造删除；新引擎的 email 组件接管通知。
+

@@ -2,7 +2,6 @@ package notify
 
 import (
 	"bufio"
-	"context"
 	"encoding/base64"
 	"net"
 	"strings"
@@ -102,8 +101,8 @@ func TestSendSMTP_SkipsAuthWhenNoUsername(t *testing.T) {
 		port = port*10 + int(c-'0')
 	}
 
-	n := New(host, port, "", "", false, "", "", []string{"a@b.com"})
-	if err := n.Send(context.Background(), "subject", "body"); err != nil {
+	n := New(host, port, "", "", false, "", "")
+	if err := n.Send([]string{"a@b.com"}, "subject", "body"); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	if *sawAuth {
@@ -123,8 +122,8 @@ func TestSendSMTP_PlainAuthCredentials(t *testing.T) {
 		port = port*10 + int(c-'0')
 	}
 
-	n := New(host, port, "user@test", "token123", false, "", "", []string{"a@b.com"})
-	if err := n.Send(context.Background(), "subject", "body"); err != nil {
+	n := New(host, port, "user@test", "token123", false, "", "")
+	if err := n.Send([]string{"a@b.com"}, "subject", "body"); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	if !*sawAuth {

@@ -2,7 +2,6 @@ package notify
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -28,45 +27,45 @@ type Notifier struct {
 	// Resend fields
 	resendToken string
 	resendFrom  string
-
-	// Common fields
-	to []string
 }
 
 // New creates a Notifier.
 // If resend.APIKey is set, it uses Resend API; otherwise falls back to SMTP.
+// 收件人不再固化在构造期：Send 按次传入（email 组件的 to 是参数）。
 func New(smtpHost string, smtpPort int, smtpUsername, smtpToken string, smtpTLS bool,
-	resendToken, resendFrom string, to []string) *Notifier {
+	resendToken, resendFrom string) *Notifier {
 	provider := "smtp"
 	if resendToken != "" {
 		provider = "resend"
 	}
 	return &Notifier{
-		provider: provider,
-		smtpHost: smtpHost,
-		smtpPort: smtpPort,
-		username: smtpUsername,
-		token:    smtpToken,
-		tls:      smtpTLS,
+		provider:    provider,
+		smtpHost:    smtpHost,
+		smtpPort:    smtpPort,
+		username:    smtpUsername,
+		token:       smtpToken,
+		tls:         smtpTLS,
 		resendToken: resendToken,
 		resendFrom:  resendFrom,
-		to:       to,
 	}
 }
 
-// Send emails the given subject and HTML body to all configured recipients.
-func (n *Notifier) Send(_ context.Context, subject, body string) error {
+// Send emails the given subject and HTML body to the given recipients.
+func (n *Notifier) Send(to []string, subject, body string) error {
+	if len(to) == 0 {
+		return fmt.Errorf("收件人列表为空")
+	}
 	switch n.provider {
 	case "resend":
-		return n.sendResend(subject, body)
+		return n.sendResend(to, subject, body)
 	default:
-		return n.sendSMTP(subject, body)
+		return n.sendSMTP(to, subject, body)
 	}
 }
 
 // sendSMTP sends via SMTP (SSL/TLS).
-func (n *Notifier) sendSMTP(subject, body string) error {
-	recipients := n.to
+func (n *Notifier) sendSMTP(to []string, subject, body string) error {
+	recipients := to
 	// 空用户名 = 无认证中继，不尝试 AUTH（smtp.SendMail 对 nil auth 也会跳过）。
 	var auth smtp.Auth
 	if n.username != "" {
@@ -74,7 +73,7 @@ func (n *Notifier) sendSMTP(subject, body string) error {
 	}
 	addr := fmt.Sprintf("%s:%d", n.smtpHost, n.smtpPort)
 
-	msg := n.buildMessage(subject, body)
+	msg := n.buildMessage(to, subject, body)
 
 	if n.tls || n.smtpPort == 465 {
 		tlsConf := &tls.Config{InsecureSkipVerify: false}
@@ -130,9 +129,9 @@ func (n *Notifier) sendSMTP(subject, body string) error {
 }
 
 // sendResend sends via Resend HTTP API.
-func (n *Notifier) sendResend(subject, body string) error {
-	validRecipients := make([]string, 0, len(n.to))
-	for _, r := range n.to {
+func (n *Notifier) sendResend(to []string, subject, body string) error {
+	validRecipients := make([]string, 0, len(to))
+	for _, r := range to {
 		if r != "" {
 			validRecipients = append(validRecipients, r)
 		}
@@ -184,73 +183,13 @@ func (n *Notifier) sendResend(subject, body string) error {
 	return nil
 }
 
-// DeployNotice carries the information rendered in a deployment result email.
-type DeployNotice struct {
-	ServiceName string
-	Branch      string
-	CommitInfo  string // latest commit subject, e.g. "feat: add login"
-	AuthorEmail string // operator / commit author
-	Status      string // "success" | "failed" | "running"
-	Stage       string // failed stage: fetch | build | stage | start (failed only)
-	ErrMsg      string
-}
-
-// NotifyDeployResult assembles and sends a deployment result email.
-func (n *Notifier) NotifyDeployResult(ctx context.Context, notice DeployNotice) error {
-	subject := n.buildSubject(notice.ServiceName, notice.Status)
-	body := n.buildBody(notice)
-	return n.Send(ctx, subject, body)
-}
-
-func (n *Notifier) buildSubject(svcName, status string) string {
-	if status == "failed" {
-		return fmt.Sprintf("[deployd] ❌ 部署失败: %s", svcName)
-	}
-	return fmt.Sprintf("[deployd] ✅ 部署成功: %s", svcName)
-}
-
-func (n *Notifier) buildBody(notice DeployNotice) string {
-	ts := time.Now().Format("2006-01-02 15:04:05")
-	var sb strings.Builder
-
-	sb.WriteString("<html><body style='font-family: sans-serif;'>")
-	sb.WriteString("<h2>部署通知</h2>")
-	sb.WriteString("<table border='0' cellpadding='4' cellspacing='0' style='border-collapse: collapse;'>")
-	sb.WriteString(n.row("服务名", notice.ServiceName))
-	sb.WriteString(n.row("分支", notice.Branch))
-	if notice.CommitInfo != "" {
-		sb.WriteString(n.row("提交记录", notice.CommitInfo))
-	}
-	sb.WriteString(n.row("状态", notice.Status))
-	sb.WriteString(n.row("时间", ts))
-	if notice.AuthorEmail != "" {
-		sb.WriteString(n.row("变更者", notice.AuthorEmail))
-	}
-	if notice.Status == "failed" {
-		stage := notice.Stage
-		if stage == "" {
-			stage = "未知"
-		}
-		sb.WriteString(n.row("失败阶段", stage))
-		sb.WriteString(n.row("错误信息", notice.ErrMsg))
-	}
-	sb.WriteString("</table>")
-	sb.WriteString("</body></html>")
-
-	return sb.String()
-}
-
-func (n *Notifier) row(label, value string) string {
-	return fmt.Sprintf("<tr><td style='padding:4px 8px;border:1px solid #ddd;background:#f5f5f5;font-weight:bold;'>%s</td><td style='padding:4px 8px;border:1px solid #ddd;'>%s</td></tr>", label, value)
-}
-
-func (n *Notifier) buildMessage(subject, body string) string {
+func (n *Notifier) buildMessage(to []string, subject, body string) string {
 	var sb strings.Builder
 	sb.WriteString("From: ")
 	sb.WriteString(n.username)
 	sb.WriteString("\r\n")
 	sb.WriteString("To: ")
-	sb.WriteString(strings.Join(n.to, ", "))
+	sb.WriteString(strings.Join(to, ", "))
 	sb.WriteString("\r\n")
 	sb.WriteString("Subject: ")
 	sb.WriteString(subject)

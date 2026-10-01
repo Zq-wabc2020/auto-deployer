@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deploylock"
 	"github.com/auto-deployer/auto-deployer/internal/logger"
-	"github.com/auto-deployer/auto-deployer/internal/notify"
 	"github.com/auto-deployer/auto-deployer/internal/servstate"
 	"github.com/auto-deployer/auto-deployer/internal/term"
 )
@@ -100,10 +98,9 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	// the queue for webhooks). For a direct manual trigger (none provided) the
 	// fetched commit author is used as the recipient (set after fetch below).
 	recipients := operatorEmails
-	// 先声明：handleErr 闭包需捕获，但二者在 fetch 后才赋值（fetch 失败时留空，
-	// 邮件 recipient 回退到 operatorEmails/notifications.to）。
+	// 先声明：fetch 后才赋值（fetch 失败时留空）。
+	// TODO(Task 10): commitInfo 随旧邮件通知删除；新引擎按需重新引入。
 	var authorEmail string
-	var commitInfo string
 
 	// 1. Ensure SSH key (pre-deploy setup; 不在 deployCtx 超时预算内)。
 	keyFile, _, _, err := build.EnsureSSHKey()
@@ -157,7 +154,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 		_ = servstate.WriteFailed(svc.Name)
 		result.Status = "failed"
 		result.Error = e.Error()
-		sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, stage, "failed", e.Error())
+		// TODO(Task 10): sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, stage, "failed", e.Error())
 		return result, e
 	}
 
@@ -171,7 +168,6 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	// 2. Get author email from latest commit (used for the notification body and
 	// as the recipient fallback for direct manual triggers).
 	authorEmail = build.GetLatestAuthorEmail(svc.Workspace, svc.Repo.Branch)
-	commitInfo = build.GetLatestCommit(svc.Workspace, svc.Repo.Branch)
 	if len(recipients) == 0 {
 		recipients = []string{authorEmail}
 	}
@@ -220,7 +216,7 @@ func Deploy(ctx context.Context, svc *config.ServiceConfig, cfg *config.AppConfi
 	_ = servstate.Clear(svc.Name)
 	result.Status = "success"
 	result.AuthorEmail = authorEmail
-	sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "", "success", "")
+	// TODO(Task 10): sendNotify(ctx, cfg, svc, log, recipients, authorEmail, commitInfo, "", "success", "")
 	log.Printf("%s deployed successfully", svc.Name)
 	return result, nil
 }
@@ -401,50 +397,5 @@ func GetServiceStatusRich(ctx context.Context, svc *config.ServiceConfig, deploy
 	return term.Colorize(raw), nil
 }
 
-func sendNotify(ctx context.Context, cfg *config.AppConfig, svc *config.ServiceConfig, log *logger.Logger, recipients []string, authorEmail, commitInfo, stage, status, errMsg string) {
-	if notifier := buildNotifier(cfg, recipients); notifier != nil {
-		to := strings.Join(recipients, ", ")
-		if to == "" {
-			to = "(configured subscribers only)"
-		}
-		log.Printf("sending notification to: %s", to)
-		notice := notify.DeployNotice{
-			ServiceName: svc.Name,
-			Branch:      svc.Repo.Branch,
-			CommitInfo:  commitInfo,
-			AuthorEmail: authorEmail,
-			Status:      status,
-			Stage:       stage,
-			ErrMsg:      errMsg,
-		}
-		if err := notifier.NotifyDeployResult(ctx, notice); err != nil {
-			log.Printf("warning: failed to send notification: %v", err)
-		} else {
-			log.Printf("notification sent successfully")
-		}
-	} else {
-		log.Printf("no notifier configured (SMTP/Resend not set)")
-	}
-}
-
-// buildNotifier creates a Notifier from config. Recipients are the deploy
-// operators (merged by the queue); configured notifications.to are appended.
-func buildNotifier(cfg *config.AppConfig, recipients []string) *notify.Notifier {
-	hasSMTP := cfg != nil && cfg.SMTP.Host != ""
-	hasResend := cfg != nil && cfg.Resend.APIKey != ""
-	if !hasSMTP && !hasResend {
-		return nil
-	}
-	all := append([]string{}, recipients...)
-	all = append(all, cfg.Notifications.To...)
-	return notify.New(
-		cfg.SMTP.Host,
-		cfg.SMTP.Port,
-		cfg.SMTP.Username,
-		cfg.SMTP.Token,
-		cfg.SMTP.TLS,
-		cfg.Resend.APIKey,
-		cfg.Resend.From,
-		all,
-	)
-}
+// TODO(Task 10): sendNotify/buildNotifier（旧编排的邮件通知）已随
+// notify.Send 按次传收件人的改造删除；新引擎的 email 组件接管通知。
