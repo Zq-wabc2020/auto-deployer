@@ -164,6 +164,11 @@ func runFlow(ctx context.Context, pl *config.PipelineConfig, ps *param.Set,
 
 		skip, err := ps.SkipTrue(stage.Skip)
 		if err != nil {
+			if isPost { // 后置节点 pre-run 错误只记日志，不中断后续 always、不覆盖主结果
+				say("--- [%s] 后置节点失败（忽略）: skip 求值失败: %v ---", stage.Name, err)
+				record(st, res, stage.Name, "failed", "")
+				continue
+			}
 			return failStage(stage, res, st, fmt.Sprintf("skip 求值失败: %v", err))
 		}
 		if skip {
@@ -181,11 +186,21 @@ func runFlow(ctx context.Context, pl *config.PipelineConfig, ps *param.Set,
 
 		params, err := ps.InterpolateParams(stage.Params)
 		if err != nil {
+			if isPost { // Review Focus #1 只约束主流程；后置未定义引用同样只记日志
+				say("--- [%s] 后置节点失败（忽略）: %v ---", stage.Name, err)
+				record(st, res, stage.Name, "failed", "")
+				continue
+			}
 			return failStage(stage, res, st, err.Error()) // Review Focus #1
 		}
 		applyDefaults(pl, stage, params, ps)
 		comp, err := components.Get(stage.Type)
 		if err != nil {
+			if isPost {
+				say("--- [%s] 后置节点失败（忽略）: %v ---", stage.Name, err)
+				record(st, res, stage.Name, "failed", "")
+				continue
+			}
 			return failStage(stage, res, st, err.Error())
 		}
 

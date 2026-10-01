@@ -174,6 +174,31 @@ func TestStageTimeout(t *testing.T) {
 	}
 }
 
+func TestPostPreRunErrorDoesNotAbortPost(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	testComp.calls = nil
+	bad := stage("bad", "always", "unused")
+	bad.Params = map[string]any{"script": "${env.typo}"} // 后置节点里的未定义引用
+	pl := newPipeline(stage("b", "", "fail"), bad, stage("clean2", "always", "cleanup2"))
+	res := Run(context.Background(), pl, Options{Trigger: "manual"})
+	if res.Status != "failed" || res.FailedStage != "b" {
+		t.Fatalf("后置 pre-run 错误不得覆盖主流程失败信息: %+v", res)
+	}
+	want := []string{"fail", "cleanup2"} // bad 求值失败未执行，后续 always 仍要跑
+	if fmt.Sprint(testComp.seq()) != fmt.Sprint(want) {
+		t.Fatalf("执行序列 = %v, want %v", testComp.seq(), want)
+	}
+	var badState string
+	for _, s := range res.Stages {
+		if s.Name == "bad" {
+			badState = s.State
+		}
+	}
+	if badState != "failed" {
+		t.Fatalf("出错的后置节点应记录 failed: %+v", res.Stages)
+	}
+}
+
 func TestCancelRunsAlwaysNotFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	testComp.calls = nil
