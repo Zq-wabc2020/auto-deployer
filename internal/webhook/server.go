@@ -2,10 +2,17 @@ package webhook
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
@@ -14,6 +21,15 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deployqueue"
 	"github.com/auto-deployer/auto-deployer/internal/pipeline"
+)
+
+// Webhook 签名校验用请求头。
+const (
+	githubSig256Header   = "X-Hub-Signature-256"
+	githubSigHeader      = "X-Hub-Signature"
+	giteeTokenHeader     = "X-Gitee-Token"
+	giteeSigHeader       = "X-Gitee-Signature"
+	giteeTimestampHeader = "X-Gitee-Timestamp"
 )
 
 // GitHubPushPayload represents a GitHub push webhook event.
@@ -64,14 +80,29 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := readBody(r)
+	// 配置必须先加载：签名校验需要 webhook.secret，且配置损坏不能再按
+	// 「宽松 200」吞掉（让 GitHub/Gitee 平台侧看到 5xx 并重试）。
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Printf("[webhook] config error: %v\n", err)
+		http.Error(w, "config error", http.StatusInternalServerError)
+		return
+	}
+
+	raw, jsonBody, err := readRawAndJSON(r)
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
 
 	source := detectSource(r)
-	result, err := ParsePayload(body, source)
+	if err := verifySecret(r, raw, source, cfg.Webhook.Secret); err != nil {
+		fmt.Printf("[webhook] rejected %s push: %v\n", source, err)
+		http.Error(w, "signature verification failed", http.StatusUnauthorized)
+		return
+	}
+
+	result, err := ParsePayload(jsonBody, source)
 	if err != nil {
 		fmt.Printf("[webhook] parse error: %v\n", err)
 		http.Error(w, "parse error", http.StatusBadRequest)
@@ -81,14 +112,6 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[webhook] received %s push to %s/%s\n", source, result.RepoURL, result.Branch)
 
 	// Match against configured pipelines
-	cfg, err := loadConfig()
-	if err != nil {
-		fmt.Printf("[webhook] config error: %v\n", err)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-		return
-	}
-
 	matched := MatchPipelines(cfg.Pipelines, result)
 	if len(matched) == 0 {
 		fmt.Printf("[webhook] no pipeline matched for %s/%s\n", result.RepoURL, result.Branch)
@@ -218,19 +241,94 @@ func MatchPipelines(pipelines []config.PipelineConfig, result *DispatchResult) [
 	return matched
 }
 
-// readBody extracts the JSON payload from the request body.
-// GitHub webhooks may be delivered as application/x-www-form-urlencoded with
-// the JSON in a "payload" form field, while Gitee and GitHub JSON deliveries
-// send raw JSON. Both are normalized to the raw JSON bytes here so that
-// ParsePayload only ever deals with JSON.
-func readBody(r *http.Request) ([]byte, error) {
-	if strings.Contains(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
-		if err := r.ParseForm(); err != nil {
-			return nil, err
-		}
-		return []byte(r.PostForm.Get("payload")), nil
+// readRawAndJSON 一次性读完原始 body，并把内容归一化为 ParsePayload 所需的
+// JSON：GitHub 可能以 application/x-www-form-urlencoded 投递（JSON 在 "payload"
+// 字段），其余情况 raw == JSON。两个返回值都必要——签名校验必须作用于原始
+// 字节（form 编码时签名覆盖 form 原文），解析则用归一化 JSON。
+func readRawAndJSON(r *http.Request) (raw, jsonBody []byte, err error) {
+	raw, err = io.ReadAll(r.Body)
+	if err != nil {
+		return nil, nil, err
 	}
-	return io.ReadAll(r.Body)
+	if strings.Contains(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		form, perr := url.ParseQuery(string(raw))
+		if perr != nil {
+			return raw, nil, perr
+		}
+		return raw, []byte(form.Get("payload")), nil
+	}
+	return raw, raw, nil
+}
+
+// verifySecret 校验 webhook 来源签名。secret 为空串 = 未配置校验（完全放行，
+// 预留的逃生口，config.yaml.example 注明）；配置了 secret 时来源不明或签名
+// 不符一律拒绝（fail-closed）。
+func verifySecret(r *http.Request, rawBody []byte, source, secret string) error {
+	if secret == "" {
+		return nil
+	}
+	switch source {
+	case "github":
+		if verifyGitHubSig(r, rawBody, secret) {
+			return nil
+		}
+	case "gitee":
+		if verifyGiteeSig(r, secret) {
+			return nil
+		}
+	}
+	return fmt.Errorf("signature verification failed (source=%s)", source)
+}
+
+// verifyGitHubSig 校验 GitHub 签名：优先 X-Hub-Signature-256（HMAC-SHA256，
+// 与 GitHub 当前投递一致）；该头存在但不匹配时**不回退** sha1——防止攻击者
+// 把正确的 sha1 头配错误的 sha256 头混过校验。sha256 头缺失才接受旧版
+// X-Hub-Signature（HMAC-SHA1）。两种算法的作用对象都是原始 body。
+func verifyGitHubSig(r *http.Request, rawBody []byte, secret string) bool {
+	if v := r.Header.Get(githubSig256Header); v != "" {
+		return checkHMACSig(v, "sha256=", rawBody, secret, sha256.New)
+	}
+	if v := r.Header.Get(githubSigHeader); v != "" {
+		return checkHMACSig(v, "sha1=", rawBody, secret, sha1.New)
+	}
+	return false
+}
+
+// verifyGiteeSig 校验 Gitee 签名：两方案任一命中即通过——X-Gitee-Token 等于
+// 密钥（密码方案，恒时比较），或 X-Gitee-Timestamp 的 HMAC-SHA256 十六进制
+// 与 X-Gitee-Signature 一致（加签方案，Gitee 对时间戳签名）。
+func verifyGiteeSig(r *http.Request, secret string) bool {
+	if token := r.Header.Get(giteeTokenHeader); token != "" {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(secret)) == 1 {
+			return true
+		}
+	}
+	ts := r.Header.Get(giteeTimestampHeader)
+	sig := r.Header.Get(giteeSigHeader)
+	if ts == "" || sig == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return subtle.ConstantTimeCompare([]byte(strings.ToLower(sig)), []byte(expected)) == 1
+}
+
+// checkHMACSig 校验 "algo=<hex>" 形式的签名头：对 rawBody 按给定哈希算法做
+// HMAC，去掉头前缀后做十六进制解码并恒时比较。解码失败/格式不符一律视为不匹配。
+func checkHMACSig(headerValue, prefix string, rawBody []byte, secret string, newHash func() hash.Hash) bool {
+	v := strings.TrimPrefix(headerValue, prefix)
+	if v == headerValue {
+		return false
+	}
+	mac := hmac.New(newHash, []byte(secret))
+	mac.Write(rawBody)
+	want := mac.Sum(nil)
+	got, err := hex.DecodeString(v)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(want, got)
 }
 
 func detectSource(r *http.Request) string {
