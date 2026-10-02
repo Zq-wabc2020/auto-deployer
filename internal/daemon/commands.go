@@ -124,6 +124,9 @@ func isRunStartLine(line []byte) bool {
 			return false
 		}
 	}
+	if bytes.Contains(line, []byte("耗时")) {
+		return false // run 结束头（内容形如 "=== <name> <status> 耗时 <dur> ==="），非开始头
+	}
 	return true
 }
 

@@ -32,6 +32,31 @@ func TestLastRunSection(t *testing.T) {
 	}
 }
 
+// TestLastRunSection_Digit2Name 工作项名以 "2" 开头（如 "2024-app"）时，
+// run 结束头 "=== 2024-app success 耗时 3s ===" 含 "=== 2"，不应被误判为 run 开始头。
+func TestLastRunSection_Digit2Name(t *testing.T) {
+	log := strings.Join([]string{
+		"[2024-app] 2026-10-01 22:50:00 === 2026-10-01 22:50:00 2024-app [manual  ] ===",
+		"[2024-app] 2026-10-01 22:50:01 构建",
+		"[2024-app] 2026-10-01 22:50:05 === 2024-app success 耗时 5s ===",
+		"[2024-app] 2026-10-01 22:51:00 === 2026-10-01 22:51:00 2024-app [webhook main abc1234] ===",
+		"[2024-app] 2026-10-01 22:51:01 部署",
+		"[2024-app] 2026-10-01 22:51:10 === 2024-app failed 耗时 10s ===",
+	}, "\n")
+
+	got := lastRunSection([]byte(log))
+	// 应命中最后一次 run 开始头（"=== 2026-"），而非把结束头当作开始头只返回一行
+	if !bytes.HasPrefix(got, []byte("[2024-app] 2026-10-01 22:51:00 === 2026-10-01 22:51:00 2024-app [webhook")) {
+		t.Fatalf("lastRunSection 未命中最后一次 run 开始头，got:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("22:50:01 构建")) {
+		t.Fatalf("lastRunSection 不应包含上一次 run 的内容，got:\n%s", got)
+	}
+	if !bytes.Contains(got, []byte("22:51:01 部署")) || !bytes.Contains(got, []byte("=== 2024-app failed 耗时 10s ===")) {
+		t.Fatalf("lastRunSection 应包含最后一次 run 的主体与结束头，got:\n%s", got)
+	}
+}
+
 // TestLastRunSectionOldFormat 无分节头的旧格式日志应原样返回整个文件。
 func TestLastRunSectionOldFormat(t *testing.T) {
 	log := "[app] 2026-10-01 22:50:00 deploying\n[app] 2026-10-01 22:50:01 done\n"
