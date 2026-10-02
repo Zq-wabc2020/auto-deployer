@@ -1,20 +1,23 @@
-# deployd 配置
+# deployd 配置模板（pipeline 格式）
 #
-# 配置以流水线（pipelines）组织工作项：每个工作项由多个 stage 节点组成。
-# - git 节点决定 webhook 匹配（url/branch 必须是字面量，不能写 ${...} 引用）
-# - shell 节点执行构建/部署命令
-# - email 节点发送通知；when 为空=主流程成功时执行
-# - cleanup 节点清理工作空间
-# 节点 when 取值：空（主流程）/ failure（主流程失败时）/ always（无论成败）
+# 配置以流水线（pipelines）组织工作项：每个工作项由任意数量的 stage 节点组成。
+# 节点类型（组件）：git / shell / email / cleanup，字段见下表：
+#   - 第一个 git 节点决定 webhook 匹配（url / branch 必须是字面量，不能写 ${...} 引用）；
+#     没有 git 节点的工作项无法被 webhook 匹配，只能 `deployd exec` 手动触发。
+#   - shell 节点执行构建/部署命令（单行或 | 多行块），非零退出码 = 节点失败。
+#   - email 节点发送通知；不配 SMTP/Resend 则不发送（节点会报「未配置发信」失败）。
+#   - cleanup 节点清理工作空间（缺省只保 .git，下轮 git fetch 才能走快路径）。
+# 节点 when 取值：空 = 主流程（fail-fast）/ failure = 仅主流程失败时执行 / always = 无论成败都执行。
+# 节点 timeout 可选：单节点超时（子 ctx）；整条流水线另有 timeout 总预算。
 
 # ─────────────── 监听地址 ───────────────
 server:
-  host: "0.0.0.0"          # 0.0.0.0=监听所有网卡(允许外部访问)；127.0.0.1=仅本机可访问
+  host: "0.0.0.0"    # 0.0.0.0=监听所有网卡（webhook 会暴露公网，务必用防火墙/反向代理限制访问）；127.0.0.1=仅本机
   port: 9527
 
 # ─────────────── Webhook ───────────────
 webhook:
-  secret: ""               # GitHub/Gitee webhook 签名校验密钥（预留字段，暂未启用）
+  secret: ""         # GitHub/Gitee 签名校验密钥（预留字段，暂未启用——端口可达即任何人均可伪造 push 触发构建+部署）
 
 # ─────────────── 邮件通知 ───────────────
 # SMTP 与 Resend 二选一；都不配置则不发送通知
@@ -22,47 +25,89 @@ smtp:
   host: "smtp.qq.com"
   port: 465
   username: "your-email@qq.com"
-  token: "your-smtp-authorization-code"   # SMTP 授权码，非登录密码
-  tls: true                               # STARTTLS 或 SSL 加密
+  token: "your-smtp-authorization-code"   # SMTP 授权码，非登录密码（占位，勿填真实值）
+  tls: true                               # 465 用 SSL；587 用 STARTTLS
 resend:
-  api_key: "re_xxxxxxxxxxxxxxxxxxxxx"     # 获取：https://resend.com/api-keys
+  api_key: "re_xxxxxxxxxxxxxxxxxxxxx"     # Resend API key（占位，勿填真实值；获取：https://resend.com/api-keys）
   from: "deployd <onboarding@your-domain.com>"
 notifications:
-  to:                      # 额外通知收件人（代码提交作者始终作为默认收件人）
+  to:                     # email 节点 to 缺省 = 全局 notifications.to + 本次触发者（system.pushers）
     - "admin@example.com"
 
 # ─────────────── 工作项列表 ───────────────
 pipelines:
+  # ── 示例：Spring Boot（jar）服务，完整四组件用法 ──
   - name: "my-app"
-    workspace: "/opt/deployd/apps/my-app"   # 代码克隆与工作目录
-    timeout: "45m"                          # 可选：整条流水线总超时(默认 30m)
-    env:                                    # 可选：环境变量（${env.xxx} 引用）
+    workspace: "/opt/deployd/apps/my-app"    # 代码克隆与工作目录（各工作项必须唯一）
+    timeout: "45m"                           # 可选：整条流水线总超时（默认 30m）
+    env:                                     # 可选：工作项级环境变量（${env.xxx} 引用，值为字面量）
       JAVA_OPTS: "-Xms100m -Xmx128m"
     stages:
       - name: 拉取代码
         type: git
         params:
-          url: "https://github.com/user/repo.git"   # Git 仓库地址（webhook 匹配用字面量）
-          branch: ["main"]                          # 部署分支（webhook 匹配用字面量）
+          url: "https://github.com/user/repo.git"   # webhook 匹配 URL（字面量；HTTPS 会自动转 SSH）
+          branch: ["main"]                          # webhook 匹配分支（字面量；列表形式）
+        output:                              # 可选：把结果变量映射成命名参数
+          commit: "${commit}"                # 裸名结果（${commit}/${changed}/${branch}）只能在本节点 output: 里引用
+
       - name: 构建
         type: shell
+        skip: "${args.skip_build}"           # 可选：插值后等于字符串 "true" 即跳过该节点（exec 时传 --skip_build=true）
         params:
-          sh: "mvn package -DskipTests"       # 构建命令（shell），支持 && 串联
+          sh: "mvn package -DskipTests"      # 单行命令；也支持 | 多行 YAML 块（Jenkins sh ''' 对应物）
+        output:                              # shell 结果变量：${exit_code}/${stdout}/${stderr}
+          exit: "${exit_code}"
+
       - name: 部署
         type: shell
         params:
-          sh: "systemctl restart my-app"      # 部署命令（纯启动/重启，不要写 nohup/&）
+          cwd: "/opt/deployd/apps/my-app"    # 可选：执行目录（缺省 = 工作项 workspace）
+          env: { JVM_MEM: "-Xms128m" }       # 可选：本次执行额外环境变量
+          sh: |                              # 多行脚本：后台启进程 + 手写就绪轮询
+            # deployd 不拥有进程：后台化、PID 记录、就绪等待都由这个 shell 节点自己负责
+            cp target/my-app.jar /opt/my-app/
+            nohup java -jar /opt/my-app/my-app.jar >/var/log/my-app.log 2>&1 &
+            for i in $(seq 1 30); do         # 就绪轮询：2xx/3xx 即成功
+              curl -sf http://localhost:8080/health && exit 0
+              sleep 2
+            done
+            exit 1
+
       - name: 成功通知
         type: email
         params:
-          subject: "${system.name} 部署成功 ${system.commit}"
-          body: "分支 ${system.branch} 由 ${system.author} 触发"
+          subject: "部署 ${system.name} 成功 ${args.tag}"   # ${args.*} 来自 `deployd exec my-app --tag=v1.2` → args.tag=v1.2
+          body: "分支 ${system.branch}，commit ${output.拉取代码.commit}，触发 ${system.trigger}（${system.author}）"
+
       - name: 失败通知
         type: email
-        when: failure
+        when: failure                          # 仅主流程失败时执行
         params:
           subject: "${system.name} 部署失败于 ${system.failed_stage}"
-          body: "${system.message}"
+          body: "失败节点 ${system.failed_stage}：${system.message}\n完整日志：deployd logs ${system.name}"
+
       - name: 清理工作空间
         type: cleanup
-        when: always
+        when: always                           # 无论成败都执行（取消后也执行）
+        params:
+          keep: [".git", "target"]             # 可选：glob 保留列表（缺省仅 .git）
+
+  # ── 示例（注释掉）：无 git 节点的纯脚本工作项 ──
+  # 没有 git 节点 → 无法被 webhook 匹配，只能 `deployd exec daily-backup` 手动触发。
+  # - name: "daily-backup"
+  #   workspace: "/opt/deployd/backup"
+  #   stages:
+  #     - name: 备份数据库
+  #       type: shell
+  #       params:
+  #         sh: "pg_dump -U app -d db | gzip > /backups/db-$(date +%F).sql.gz"
+  #     - name: 上传备份
+  #       type: shell
+  #       params:
+  #         sh: "rsync -a /backups/ backup-host:/backups/"
+  #     - name: 成功通知
+  #       type: email
+  #       params:
+  #         subject: "${system.name} 备份完成"
+  #         body: "备份已上传"

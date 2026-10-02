@@ -1,20 +1,43 @@
 # deployd
 
-自动化部署守护进程 - 一个在后台运行的 CLI 工具，接收来自 GitHub / Gitee 的 Webhook 事件，自动完成服务的构建、归位与重启。
+自动化部署守护进程 - 接收 GitHub / Gitee Webhook 推送，按**工作项流水线（pipeline）**自动执行构建、部署与通知。deployd 只做编排（拉参数、跑节点、超时、互斥、记状态），不再内置任何部署知识——具体部署逻辑由你在流水线里用 **git / shell / email / cleanup 四种组件**自己拼装。
 
 ## 功能特性
 
-- **五种部署模型** - `jvm`（Spring Boot 等 jar 服务）、`docker`（容器）、`static`（Vue/React 静态站点，nginx 托管）、`node`（SSR/Express 常驻进程）、`python`（FastAPI/Flask 等 ASGI/WSGI 服务）
-- **后台守护进程** - 在系统后台运行，不受终端关闭影响
-- **Webhook 服务器** - 监听 GitHub / Gitee 推送事件，按仓库 URL + 分支匹配对应服务
-- **同服务部署合并队列** - 连续推送自动合并为一次部署（只部署最新提交），flock 文件锁跨进程串行化，手动/自动部署互不冲突
-- **部署生命周期分阶段** - 构建（Build）→ 归位（Stage，仅部署时执行）→ 停旧 → 启新（纯启动），重启不重复归位/迁移
-- **命令经 shell 执行** - `&&`、`|`、`>`、`$VAR` 等语义完整支持；build 支持命令列表
-- **git 快路径** - 已有仓库直接 `fetch + reset --hard`，失败自动回退全量克隆
-- **邮件通知** - 通过 SMTP 或 Resend API 在部署成功/失败时发送 HTML 邮件（含失败阶段）
-- **插件注册表** - 新增服务类型只需实现 Deployer 接口并自注册，无需改动调度代码
-- **交互式配置向导** - `deployd config` 按部署模型引导配置
+- **流水线工作项** - 每个工作项是一条由任意数量节点组成的流水线模板；节点以组件方式执行，可自由组合
+- **四种正交组件** - `git`（拉代码）/ `shell`（执行命令）/ `email`（通知）/ `cleanup`（清理），无需任何插件开发即可覆盖绝大多数部署场景
+- **Webhook 匹配** - 监听 GitHub / Gitee 推送事件，按流水线第一个 git 节点的 `url + branch` 匹配
+- **合并队列 + 部署锁** - 连续推送自动合并为最新一次执行；每工作项一把 flock 锁，手动 `exec` 与队列互斥
+- **后置节点（when）** - `failure` / `always` 抽象了「失败发邮件 + 无论成败都清理」等收尾逻辑
+- **四套参数插值** - `${system.*}` / `${env.*}` / `${args.*}` / `${output.<节点名>.*}`，节点参数、邮件正文全可引用
+- **两级超时** - 整条流水线总预算 + 单节点 timeout（子 ctx，超时杀整个进程组）
+- **状态与日志** - 状态文件落盘，彩色 `status` 展示；日志按 run / 节点分节，支持 `-n` 截断与实时跟随
+- **git 快路径** - 已有仓库 `fetch + reset --hard`，失败自动回退全量克隆；HTTPS 自动转 SSH
+- **交互式配置向导** - `deployd config` 生成 pipeline 格式配置
 - **发布自动化** - GitHub Actions 自动构建 macOS / Linux 二进制
+
+## 架构
+
+```
+GitHub/Gitee Push
+      │
+      ▼
+Webhook 服务器（按首个 git 节点的 url+branch 匹配工作项）
+      │
+      ▼
+每工作项合并队列（连续推送合并为最新一次；flock 锁跨进程串行）
+      │
+      ▼
+流水线执行引擎（生成参数集 → 主流程 → 后置流程 → 状态落盘）
+      │
+      ├── git 组件：fetch 快路径 / 干净克隆 / HTTPS→SSH
+      ├── shell 组件：sh -c 执行，进程组信号，超时杀得干净
+      ├── email 组件：SMTP / Resend，subject/body 全参数插值
+      └── cleanup 组件：清理 workspace（缺省保 .git）
+```
+
+- **执行引擎** - 一次执行（`exec` 前台或 daemon 队列触发，同一套引擎）：生成参数集（system + env + args，output 空）→ 按列表顺序执行主流程节点（fail-fast）→ 执行后置节点（when 匹配）→ 状态落盘
+- **组件注册表** - 节点按 `type` 分发；新增组件只需实现 `Run(ctx, params) → (结果变量, error)` 并在 `init()` 自注册
 
 ## 安装
 
@@ -33,8 +56,6 @@ sudo mv deployd /usr/local/bin/
 
 ### 交叉编译（本地打 Linux 包）
 
-在 Mac 或其他平台直接编译 Linux 可执行文件，无需安装交叉工具链：
-
 ```bash
 # Linux x86_64（最常见的阿里云 ECS 机型）
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o deployd-linux-amd64 .
@@ -43,7 +64,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o deployd-linux-amd64 .
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o deployd-linux-arm64 .
 ```
 
-将生成的二进制文件上传到服务器部署：
+将生成的二进制上传到服务器：
 
 ```bash
 scp deployd-linux-amd64 user@your-server:/usr/local/bin/deployd
@@ -52,264 +73,153 @@ chmod +x /usr/local/bin/deployd
 
 ### 从 Release 下载
 
-在 [Releases](https://github.com/Zq-wabc2020/auto-deployer/releases) 页面下载最新二进制文件并放到 PATH 中即可。
+在 [Releases](https://github.com/Zq-wabc2020/auto-deployer/releases) 页面下载最新二进制并放到 PATH 即可。
 
-## 使用方法
-
-### 快速开始
+## 快速开始
 
 ```bash
-# 1. 运行交互式配置向导（按部署模型引导）
+# 1. 运行交互式配置向导（生成 pipeline 格式配置）
 deployd config
 
-# 2. 启动守护进程
+# 2. 启动守护进程（接收 webhook；Linux 后台非阻塞，macOS 前台）
 deployd start
 
-# 3. 查看状态（守护进程 + 所有服务）
+# 3. 查看所有工作项状态
 deployd status
 
-# 4. 手动触发完整部署（拉取 -> 构建 -> 归位 -> 重启 -> 就绪 -> 通知）
-deployd deploy <服务名>          # 可用缩写 deployd dep <服务名>
+# 4. 手动前台执行一个工作项（实时输出，Ctrl+C 取消；--key=value 进 ${args.*}）
+deployd exec my-app --tag=v1.2
 
-# 5. 取消进行中的部署/启动（卡在启动中时释放资源）
-deployd cancel <服务名>
+# 5. 查看最近一次 run 的日志
+deployd logs my-app            # -n N 只显示后 N 行；-t 实时跟随
 
-# 6. 服务生命周期（不重新构建）
-deployd svc <服务名>             # 查看服务状态
-deployd svc <服务名> -s          # 启动（后台执行，用 deployd status 查进度）
-deployd svc <服务名> -t          # 停止
-deployd svc <服务名> -r          # 重启（后台执行，用 deployd status 查进度）
-
-# 7. 查看日志
-deployd logs              # 守护进程日志
-deployd logs <服务名>     # 服务日志
-deployd logs <服务名> -f  # 实时跟踪
-
-# 8. 停止守护进程
+# 6. 停止守护进程
 deployd stop
 ```
 
-### 命令说明
+## CLI 全集
 
-#### 守护进程命令
-
-| 命令 | 描述 |
-|------|------|
-| `deployd start [-c 路径]` | 启动守护进程 |
-| `deployd stop` | 停止守护进程 |
-| `deployd restart [-c 路径]` | 重启守护进程 |
-| `deployd status` | 显示守护进程及所有服务状态 |
-| `deployd logs [服务名] [-f]` | 查看日志，加 `-f` 实时跟踪 |
-| `deployd deploy <名称> [-c 路径]` | 手动触发指定服务的完整部署流程（别名 `dep`） |
-| `deployd cancel <名称>` | 取消该服务进行中的部署/启动（`deploy`/webhook/`svc -s`/`svc -r` 均可取消） |
+| 命令 | 行为 |
+|---|---|
+| `deployd start [-c 路径]` | 启动 daemon（Linux 后台非阻塞 / macOS 前台） |
+| `deployd stop` | 停止 daemon |
+| `deployd status [-c 路径]` | 所有工作项最后执行状态（彩色） |
+| `deployd exec <工作项名> [--key=value ...]` | 前台执行，实时输出，Ctrl+C=cancel，TryAcquire 抢锁；`--key=value` 进 `${args.*}` |
+| `deployd cancel <工作项名>` | 取消执行中的工作项（写 sentinel，执行器轮询命中即取消当前节点） |
+| `deployd logs [工作项名] [-n N] [-t] [-c 路径]` | 最近一次 run 的日志；不填工作项名 = daemon 日志 |
 | `deployd config` | 交互式配置向导 |
 
-#### 服务生命周期命令
+> `logs` 的 `-n N` 显示最后 N 行、`-t/--follow` 实时跟随；`-f` 是手动指定日志文件路径（`--file`）。
 
-| 命令 | 描述 |
-|------|------|
-| `deployd svc <名称> -s` | 启动服务（不重新构建，**后台执行**） |
-| `deployd svc <名称> -t` | 停止服务 |
-| `deployd svc <名称> -r` | 重启服务（不重新构建，不重复归位/迁移，**后台执行**） |
-| `deployd svc <名称>` | 查看服务状态 |
-| `deployd service start/stop/restart <名称>` | 长形式，等价于上面的短旗标 |
+### 状态含义
 
-> 服务生命周期命令只做进程操作，不触发构建；完整流程用 `deploy`。
-> **static 类型没有独立进程**，`-s/-t/-r` 会被明确拒绝，重新发布请用 `deploy`。
-> `-s`/`-r` **非阻塞**：命令立即返回，启动在后台进行（期间状态为"启动中"，health 通过才转"运行"）。用 `deployd status` 或 `deployd svc <名称>` 查进度；卡住可用 `deployd cancel <名称>` 取消。
-
-#### 服务状态与颜色
-
-`deployd status` / `deployd svc <名称>` 输出的服务状态共五种（终端里带颜色，重定向到文件时为纯文本）：
+`deployd status` 输出的状态共五种（终端里带颜色，重定向到文件时为纯文本）：
 
 | 状态 | 颜色 | 含义 |
 |------|------|------|
-| `starting`（启动中） | 蓝色 | 部署/启动/重启正在就绪门控阶段（health 轮询中） |
-| `running`（运行中） | 绿色 | health 探测通过（或进程存活） |
-| `stopped`（已停止） | 灰色 | 进程/容器不存在，或 health 探测失败 |
-| `start_failed`（启动失败） | 红色 | 上次启动未通过就绪门控（超时/进程早退），**粘性**：直到下次 deploy/start/restart 成功才转绿 |
-| `unknown` | 暗黄色 | 探测异常（配置缺失、命令失败等） |
+| `running` | 蓝色 | 执行中（含 pid） |
+| `success` | 绿色 | 主流程全部节点成功 |
+| `failed` | 红色 | 主流程失败（含超时）；`running` 但锁空 = 执行进程已死，就地改写为 `failed` |
+| `cancelled` | 黄色 | 被取消（always 节点已跑完） |
+| `never` | 灰色 | 从未执行过 |
 
-> 同一服务同一时刻只允许一个部署/启动操作（文件锁）；`starting` 期间再发 deploy/svc start 会被拒绝，避免并发写状态。
-> `svc -t` 停止成功后状态回到 `stopped`（清除 start_failed）。
-
-#### 配置文件优先级
-
-`-c` 标志 > 当前目录 `config.yaml` > `~/.deployd/config.yaml` > daemon 上次启动用的配置（记录在 `~/.deployd/config.path`，每次 `deployd start` 覆盖写）> `~/config.yaml`（旧默认，兼容保留）
-
-> daemon 与所有 CLI 命令共用同一套解析顺序，不会出现"daemon 读 A、status 读 B"。只要用 `deployd start` 启动过，在任何目录执行 `status`/`logs` 都能找到配置。
+每行还显示触发方式（manual/webhook）、耗时、commit 短 sha、失败节点。
 
 ## Webhook URL 配置
 
-服务启动后，Webhook 监听地址为：
+daemon 启动后，Webhook 监听地址为：
 
 ```
 http://<服务器IP>:<端口>/webhook
 ```
 
-默认端口 `9527`，`server.host` 默认 `0.0.0.0`（监听所有网卡）。
+端口在配置 `server.port` 指定（模板示例用 9527）。**注意：**
 
-**GitHub 配置步骤：**
-1. 仓库 -> Settings -> Webhooks -> Add webhook
-2. Payload URL 填入 `http://<你的服务器IP>:9527/webhook`
-3. Content type 选择 `application/json`
-4. Secret 可填（当前未启用签名验证，可留空）
-5. 选择 "Just the push event"
-6. 点击 Add webhook
+- `server.host: "0.0.0.0"` 会把 webhook 暴露到公网，且当前**无签名验证**（`webhook.secret` 字段未启用）——端口可达即任何人均可伪造 push 触发构建+部署，务必用防火墙 / 反向代理 / 内网隔离限制访问
+- 服务器需要有公网 IP 或可通过内网穿透暴露该端口，否则 GitHub/Gitee 无法回调
 
-**Gitee 配置步骤：**
-1. 仓库 -> 管理 -> WebHooks -> 添加 WebHook
-2. URL 填入 `http://<你的服务器IP>:9527/webhook`
-3. 选择触发事件：Push 事件
-4. 点击确认
+**GitHub 配置步骤：** 仓库 → Settings → Webhooks → Add webhook → Payload URL 填 `http://<你的服务器IP>:<端口>/webhook` → Content type `application/json` → Secret 可留空（未启用验证）→ 选择 "Just the push event"。
 
-> **注意：** 服务器需要有公网 IP 或可通过内网穿透暴露该端口，否则 GitHub/Gitee 无法回调。
+**Gitee 配置步骤：** 仓库 → 管理 → WebHooks → 添加 WebHook → URL 填 `http://<你的服务器IP>:<端口>/webhook` → 触发事件选 Push。
 
 ## 配置说明
 
-配置分两层：**通用层**（所有模型一致：`name/type/repo/workspace/build`）和**策略层**（`deploy:`，结构由 `type` 决定）。命令均经 `sh -c` 执行。
-
 ```bash
-cp config.yaml.example config.yaml   # 模板内含全部五种模型的带注释示例
+cp config.yaml.example config.yaml   # 模板含完整工作项示例与全部组件的用法注释
 ```
 
-### 通用配置项
+配置由**全局配置**（server / webhook / smtp / resend / notifications）+ **工作项列表**（`pipelines:`）组成。全局配置与旧版一致；工作项由节点编排。
 
-| 配置路径 | 说明 | 示例 |
-|----------|------|------|
-| `server.host` / `server.port` | 监听地址 / 端口 | `"0.0.0.0"` / `9527` |
-| `smtp.*` / `resend.*` | 邮件通知（二选一，详见下方） | |
-| `notifications.to` | 部署通知收件人列表（提交作者始终默认收件） | `["admin@example.com"]` |
-| `services[].name` | 服务名称，用于日志和管理命令 | `"my-app"` |
-| `services[].type` | 部署模型：`jvm` / `docker` / `static` / `node` / `python`（`springboot` 为 `jvm` 别名） | `"jvm"` |
-| `services[].repo.url` / `.branch` | Git 仓库地址（HTTPS 自动转 SSH）/ 分支 | `"main"` |
-| `services[].workspace` | 代码克隆和工作目录 | `"/opt/deployd/apps/my-app"` |
-| `services[].build.command` | 构建命令，支持单条字符串或命令列表 | `"mvn package -DskipTests"` |
-| `services[].timeout` | fetch + build + stage + **就绪等待**的**总超时**（全流程共享一个计时，非每阶段各 30m；Go duration 语法），默认 `30m` | `"45m"` |
-| `services[].deploy.health` | **所有模型必填**：HTTP 健康检查 URL。既是部署成功的就绪判定（轮询直到 2xx/3xx），也是 `status` 的实时探测依据 | `"http://localhost:8080/health"` |
-| `services[].deploy.health_interval` | 就绪轮询间隔，默认 `10s`（Go duration 语法）。无需单独的健康检查超时--就绪等待共享 `timeout` 总预算 | `"5s"` |
-
-### 各模型 `deploy:` 策略配置
-
-**jvm**（Spring Boot 等 `java -jar` 服务）
+### 工作项结构
 
 ```yaml
-deploy:
-  # artifact: "target/*.jar"   # 可选：产物 glob 或列表。不填=原地启动(run 写 target/xxx.jar)
-  # dest: "/opt/app"           # 可选：归位目录。填了才拷贝；run 也会在该目录下执行
-  run: "java -jar hello-world-0.0.1.jar"   # 纯启动，不要写 nohup/&（后台化由工具负责）
-  health: "http://localhost:8080/health"   # 必填：就绪判定与 status 探测共用
-  # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
-  env: { JAVA_OPTS: "-Xms100m" }           # 可选：运行时环境变量
+pipelines:
+  - name: "my-app"
+    workspace: "/opt/deployd/apps/my-app"   # 代码克隆与工作目录（每个工作项唯一）
+    timeout: "45m"                          # 可选：整条流水线总超时（默认 30m）
+    env: { JAVA_OPTS: "-Xms100m" }          # 可选：工作项级环境变量（${env.xxx}）
+    stages:
+      - name: 拉取代码
+        type: git                          # 组件类型：git / shell / email / cleanup
+        params: { url: "...", branch: ["main"] }   # 组件参数
+        output: { commit: "${commit}" }    # 可选：结果变量 → 命名参数
+        skip: "${args.skip_build}"         # 可选：插值后等于 "true" 即跳过
+        when: ""                           # 可选：""(主流程) / failure / always
+        timeout: "10m"                     # 可选：单节点超时
+      - name: ...
 ```
 
-> workspace 里有 `.java-version` 时自动选用对应 JDK（探测顺序：jenv -> macOS java_home -> `/usr/lib/jvm/*` 扫描，Linux 无 jenv 也可用）。
+- **触发匹配**：第一个 git 节点的 `url` / `branch` 决定 webhook 匹配，**必须是字面量**（不能写 `${...}` 引用）。没有 git 节点的工作项无法被 webhook 匹配，只能 `exec` 手动触发
+- **校验**（配置加载期）：工作项名唯一、workspace 必填且唯一、节点名工作项内唯一、`type` 已注册、`when` 枚举合法、timeout 为合法 duration
+- **未定义的参数引用不做加载期全量静态检查**：引用可指向运行期才有的 output/system 值；运行期节点启动时求值失败即该节点失败并报明确错误，不静默当空串
 
-**static**（Vue/React SPA、SSG，无独立进程）
+### 四套参数
 
-```yaml
-deploy:
-  artifact: "dist"                         # 构建产物（目录或 glob，见下）
-  dest: "/usr/share/nginx/html/app"        # 拷贝到 nginx 目录
-  nginx_reload: true                       # 拷贝后执行 nginx -s reload
-  health: "https://app.example.com/health" # 必填：就绪判定与 status 探测共用
-  # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
-```
+引用语法 `${前缀.键}`，统一插值器；值可以是参数引用与字面量的拼接（如 `"部署 ${system.name} @ ${output.拉取代码.v}"`）。
 
-**artifact 语义**（jvm/static/node 通用，嵌套目录会递归拷贝）：
+| 参数集 | 前缀 | 来源 | 生成时机 |
+|---|---|---|---|
+| 系统参数 | `${system.*}` | name、trigger（manual/webhook）、commit、branch、author、message、pushers（webhook 合并任务的作者列表）、workspace、result（success/failed，仅后置节点有值）、failed_stage | 运行期，每次执行生成一份 |
+| 环境变量参数 | `${env.*}` | 工作项 `env:` 块 | 配置期定义 |
+| 命令行参数 | `${args.*}` | `deployd exec xxx --foo=bar` → `args.foo=bar`；webhook 触发时为空集 | 触发时 |
+| 节点输出参数 | `${output.<节点名>.<键>}` | 各节点 `output:` 映射结果 | 节点执行后累积 |
 
-| 写法 | 行为 |
-|------|------|
-| `dist` / `dist/` | 目录**内容**整体拷贝到 dest 根（static 前端推荐） |
-| `dist/*` | 每个匹配项拷到 dest 根：文件平铺，子目录保持 `dest/<目录名>/` |
-| `target/*.jar` | 文件 glob（jvm 常规用法），自动跳过 `*.original.jar` |
-| `["hello1.txt", "test.json"]` | **列表写法**：多个具体文件/多个 glob，各项独立解析后统一平铺到 dest 根 |
+**组件结果变量与 output 映射**：组件执行后产生一组**裸名结果变量**，只能在**本节点的 `output:` 值里**用裸名引用（`output: {app_version: "${stdout}"}`），映射后才能被后续节点以 `${output.<节点名>.<键>}` 引用。`output` 值也可以是字面量或四套参数引用（透传）。`stdout` 等大结果存内存**超过 1MB 截断**（防构建日志撑爆参数集；完整日志在日志文件里）。
 
-> 不支持 `**`（Go 标准库无 doublestar 语义）。
+**skip / when 求值**：`skip` 插值后等于字符串 `true` 即跳过（不做表达式语言）；`when` 枚举 `failure` / `always`，缺省 = 主流程。
 
-**node**（Next.js SSR / Express 等常驻进程；源码即产物，也可归位）
+### when 语义（后置执行机制）
 
-```yaml
-deploy:
-  run: "node server.js"            # 源码即产物(默认)：不配 artifact，在 workspace 启动
-  health: "http://localhost:3000/health"   # 必填：就绪判定与 status 探测共用
-  env: { NODE_ENV: "production" }
-  # 归位模式(可选)：把构建产物拷到 dest，run 在 dest 执行，与下次构建互不干扰
-  # artifact: ".output"          # 产物目录/glob(如 Nuxt 的 .output)，语义同 jvm/static
-  # dest: "/opt/app-run"           # 填了才拷贝；workspace 不清理，保留 node_modules 做增量构建
-```
+- **缺省 when** = 主流程节点：按列表顺序执行，任一失败则跳过剩余主流程节点（fail-fast）
+- `when: failure` = 仅主流程失败时执行
+- `when: always` = 无论成败都执行
 
-**python**（FastAPI/Flask/Django，源码即产物）
+主流程结束后（成功或失败），后置节点（when=failure/always）按**列表顺序**执行。成功邮件 = 主流程末尾的普通 email 节点；失败邮件 = `when: failure` 的 email 节点；清理 = `when: always` 的 cleanup 节点。后置节点自身失败只记日志，不递归触发其他后置节点，不影响最终状态。取消（cancelled）时 `always` 节点仍执行（清理语义），`failure` 节点不执行（cancelled ≠ failed）。本机制等价于 GitHub Actions `if: always()/failure()` 的扁平化。
 
-```yaml
-build:
-  command: ["python3.11 -m venv .venv", ".venv/bin/pip install ."]
-deploy:
-  venv: ".venv"                              # 可选：其 bin 自动前置 PATH
-  migrate: ".venv/bin/alembic upgrade head"  # 可选：迁移(部署专属,重启不执行)
-  run: ".venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"
-  health: "http://localhost:8000/health"    # 必填：就绪判定与 status 探测共用
-  env: { DATABASE_URL: "..." }
-```
+### 四种组件
 
-**docker**（容器）
+| 组件 | params | 结果变量 | 说明 |
+|---|---|---|---|
+| `git` | `url`*、`branch`*（列表）、`workspace`（缺省 `${system.workspace}`） | `commit`、`changed`（bool，无新提交）、`branch` | fetch 快路径（fetch + reset --hard origin/<branch>）+ 失败回退干净克隆；HTTPS 自动转 SSH |
+| `shell` | `sh`*（单行或多行 YAML 块）、`cwd`（缺省 workspace）、`env`（本次执行额外环境变量） | `exit_code`、`stdout`、`stderr` | `sh -c` 执行，进程组信号（超时/取消杀得干净）；多行块即多行脚本（Jenkins `sh '''` 对应物）；非零退出码 = 失败 |
+| `email` | `to`（缺省 = 全局 `notifications.to` + `system.pushers`）、`subject`*、`body`* | `error`（发送失败信息） | 复用 SMTP/Resend 发送层；subject/body 全参数插值 |
+| `cleanup` | `keep`（glob 列表，缺省 `[".git"]`） | `deleted`（清理条目数） | 删 workspace 下不在 keep 内的一切；`.git` 缺省保留是为了下轮 fetch 快路径 |
 
-```yaml
-deploy:
-  image: "app:latest"
-  container: "app"              # 默认取服务名
-  ports: ["8000:8000"]
-  env: { FOO: "bar" }
-  volumes: ["/data:/data"]
-  # args: ["--memory=512m"]     # 额外 docker run 参数
-  health: "http://localhost:8000/health"    # 必填：就绪判定与 status 探测共用
-```
+`*` = 必填（有缺省值者除外）。节点失败定义：组件返回 error，或节点超时。
 
-### 命令执行注意事项
+### 超时、取消、锁与队列
 
-- **命令经 `sh -c` 执行**，`&&`、`||`、`|`、`>`、`$VAR` 等 shell 语义均可使用
-- **命令环境继承自 daemon 启动者**（非登录非交互 shell，不加载 `~/.bash_profile`）：谁启动 `deployd`，构建环境就是谁的。需要自定义函数/别名时在命令列表里显式加载：`[". ~/.bash_profile", "your_func ..."]`（用 `.` 而非 `source`，后者在 Ubuntu 的 dash 下不可用）
-- **fetch/build/stage/就绪等待有超时保护**：`timeout` 是全流程**总超时**（共享一个计时，默认 30m，非每阶段各 30m），任一阶段超时即杀整个进程组（不会留下 mvn 孤儿），部署失败会发邮件
-- **部署成功以就绪为准**：启动命令执行后还要轮询 `deploy.health`（间隔 `health_interval`，默认 10s）直到返回 2xx/3xx 才算部署成功、才发成功邮件；就绪等待计入 `timeout` 总预算，超时未就绪则记 `start_failed` 并发失败邮件
-- **build** 支持三种写法；在 `workspace` 下执行：
+- **两级超时**：整条流水线 `timeout` 是总预算 ctx（默认 30m，罩全程）；节点 `timeout` 是总 ctx 的子 ctx，节点超时 → 该节点 failed（reason=timeout），后置节点照常
+- **取消**：`deployd cancel <name>` 写 `~/.deployd/run/<name>.cancel` sentinel，执行器轮询命中即取消当前节点（杀进程组）。取消后执行 `when: always` 节点、不执行 `when: failure` 节点，状态 = cancelled。exec 前台时 Ctrl+C / SIGINT / SIGTERM 等价 cancel
+- **锁与队列**：每工作项一把 flock（`~/.deployd/run/<name>.deploy.lock`）。webhook 触发不直接执行，入每工作项队列；队列处理器阻塞抢锁，持锁期间 drain 队列只执行**最新任务**，被合并任务的作者并入 `system.pushers`。`deployd exec` TryAcquire 非阻塞抢锁：队列忙（pending 或 in-flight）直接拒绝。一条 push 匹配多个工作项（monorepo）时各工作项独立队列独立执行
 
-```yaml
-build:
-  # 写法1：命令列表（推荐，任一步失败即停）
-  command: ["mvn clean package -Dmaven.test.skip=true", "cp README.md target/"]
+### 配置文件优先级
 
-  # 写法2：多行字符串（每行都执行，但某行失败不会中断后续行）
-  # command: |
-  #   echo "step 1"
-  #   mvn clean package -Dmaven.test.skip=true
+`-c` 标志 > 当前目录 `config.yaml` > `~/.deployd/config.yaml` > daemon 上次启动用的配置（记录在 `~/.deployd/config.path`，每次 `deployd start` 覆盖写）> `~/config.yaml`（旧默认，兼容保留）
 
-  # 写法3：单行 && 连接（等价写法1的语义）
-  # command: "mvn clean package -Dmaven.test.skip=true && cp README.md target/"
-```
+> daemon 与所有 CLI 命令共用同一套解析顺序，不会出现 "daemon 读 A、status 读 B"。只要用 `deployd start` 启动过，在任何目录执行 `status`/`logs` 都能找到配置。
 
-- **run 是纯启动命令**：不要写 `nohup`/`&`/重定向，**也不要用 pm2/supervisor 等自守护工具**（`pm2 start` 会 fork 自家守护进程后立刻退出，服务脱离 deployd 管理：status 失效、Stop 杀不到）。Nuxt 直接 `node .output/server.mjs` 即可--后台化、PID 记录、停止都由 deployd 负责（记录真实进程 PID，`svc -t` 能准确杀掉）
-- run 需要多步操作时，长驻命令必须放**最后一行**（shell 会 exec 替换，保证 PID 正确）；更推荐把准备动作放进 build：
-
-```yaml
-deploy:
-  run: |
-    echo "preparing..."
-    cp backup/app.jar . 2>/dev/null || true
-    java -jar hello-world-0.0.1.jar   # 长驻命令，必须放最后一行
-```
-
-### 从旧版本迁移
-
-旧配置的顶层 `run:` 字段已移除，启动时检测到会打印迁移提示：
-
-```yaml
-# 旧                                # 新
-type: springboot                    type: jvm
-run: { command: "java -jar a.jar" } deploy: { run: "java -jar a.jar" }
-# 在 run.command 里自己 mv jar 的写法 → deploy: { artifact: "target/*.jar", dest: "/目标目录" }
-```
-
-### SSH 密钥认证
+## SSH 密钥认证
 
 deployd 使用 SSH 密钥认证访问 Git 仓库。启动时会自动检测 `~/.ssh/` 下是否有可用密钥（按 `id_ed25519`、`id_rsa` 等顺序查找），如果没有则自动生成。
 
@@ -325,18 +235,15 @@ deployd 使用 SSH 密钥认证访问 Git 仓库。启动时会自动检测 `~/.
    [daemon] Public key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... deployd@auto-generated
    ```
 
-2. **配置公钥到 Git 平台**：
-   - **GitHub**：Settings -> SSH and GPG keys -> New SSH key
-   - **Gitee**：设置 -> 安全设置 -> SSH公钥
-   - 将上面输出的公钥粘贴进去
+2. **配置公钥到 Git 平台**：GitHub → Settings → SSH and GPG keys → New SSH key；Gitee → 设置 → 安全设置 → SSH公钥。将公钥粘贴进去。
 
-3. **如果拉取代码报认证错误**，deployd 会自动提示公钥配置指引。
+3. **拉取代码报认证错误时**，deployd 会自动提示公钥配置指引。
 
-### 邮件通知
+## 邮件通知
 
-当配置了 `notifications.to` 后，每次部署完成后 deployd 会发送 HTML 邮件。
+邮件通知是**流水线里的 email 节点**，由用户自己编排（不配 email 节点就完全不发，旧版全局通知行为消失）。收件人缺省 = 全局 `notifications.to` + 触发者；成功/失败邮件分别用普通 email 节点 / `when: failure` 的 email 节点实现。
 
-支持两种发送方式：
+支持两种发送方式（**二选一**，优先 Resend）：
 
 **方式一：SMTP（兼容 QQ邮箱、网易邮箱、自建邮件服务器等）**
 
@@ -359,69 +266,27 @@ resend:
   from: "deployd <onboarding@your-domain.com>"  # 需要先配置发件域名
 ```
 
-> 两种方式二选一，优先使用 Resend。
+## 兼容矩阵（旧版 → 新版）
 
-邮件通知规则：
-- **收件人**：配置的 `notifications.to` 列表 + Webhook Payload 或 Git 日志中的提交者邮箱
-- **成功主题**：`[deployd] ✅ 部署成功: <服务名>`
-- **失败主题**：`[deployd] ❌ 部署失败: <服务名>`，正文含失败阶段（fetch/build/stage/start）和完整错误信息
+| 旧能力 | 去向 |
+|---|---|
+| 五种服务类型插件 | **删除**，由 shell+git+cleanup 组合表达（迁移文档提供 springboot 等五类对照示例） |
+| fetch 快路径/干净克隆/HTTPS→SSH | **完全保留**（git 组件） |
+| 部署竞争锁 flock | **完全保留** |
+| 队列合并最新任务 + 作者并入通知 | **保留并泛化**（作者进 `system.pushers`，email 节点 to 缺省引用它） |
+| 五态状态机/健康探测/start_failed 粘性 | **删除** → 流水线执行状态 |
+| PID 文件/进程组信号/僵尸回收 | **删除**（进程生命周期归用户脚本） |
+| svc -s/-t/-r 免构建启停 | **删除**（用户写 restart 流水线或用 systemd） |
+| deploy/cancel 命令 | **变更** → exec / cancel（取消语义变化） |
+| 内置成功/失败邮件 | **保留为可选**（email 组件 + when） |
+| artifact 归位/迁移/nginx reload | **删除**（shell 节点 cp/rsync/nginx -s reload 自理） |
+| timeout 总预算语义 | **完全保留** + 新增节点级 timeout |
+| 日志隔离/彩色 status/配置发现顺序/校验向导 | **完全保留** |
+| 旧 config.yaml | **不兼容**，需手改（见下方迁移指南） |
 
-## 部署流程
+## 从旧版本迁移
 
-### Webhook 自动部署
-
-```
-GitHub/Gitee Push
-      │
-      ▼
-Webhook 服务器（按 仓库URL+分支 匹配服务）
-      │
-      ▼
-同服务合并队列（连续推送合并为最新一次；flock 锁跨进程串行）
-      │
-      ▼
-拉取代码（快路径 fetch+reset，失败回退全量克隆）
-      ▼
-Build（执行 build.command）
-      ▼
-Stage（部署专属：拷贝产物到 dest / 数据库迁移 / nginx reload；重启时跳过）
-      ▼
-停旧进程（如有）──▶ 启动新进程（记录真实 PID）──▶ 发送邮件通知
-```
-
-`deployd deploy <名称>` 走同一条流水线，只是不经过队列（部署中会直接提示"请勿重复操作"）。
-
-## 架构
-
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  GitHub/Gitee│────▶│  Webhook     │────▶│  合并队列+锁  │
-│  推送事件     │     │  服务器       │     │  同服务串行化 │
-└──────────────┘     └──────────────┘     └──────┬───────┘
-                                                 │
-                                                 ▼
-                                          ┌──────────────┐
-                     ┌───────────────────▶│  Orchestrator │
-                     │                    │  编排层       │
-                     │                    └──────┬───────┘
-                     │ registry.Get(type)        │ Build ▸ Stage ▸ Stop? ▸ Start?
-                     │                           ▼
-        ┌────────────────────────────────────────────────────┐
-        │              Plugin Registry（插件注册表）             │
-        │   jvm    docker    static    node    python         │
-        └────────────────────────────────────────────────────┘
-              │        │                    │         │
-           PID 管理  容器生命周期      无进程(nginx)  PID 管理
-```
-
-- **Webhook 服务器** - 解析推送事件，按仓库 URL + 分支匹配已配置的服务
-- **合并队列 + 部署锁** - 同服务 webhook 触发合并去重、串行执行；手动部署与队列互斥
-- **部署编排层** - 统一处理拉取、通知等跨类型逻辑；按部署模型能力决定是否执行停/启（static 无进程则跳过）
-- **插件注册表 + 五种模型插件** - 按服务类型分发；新增类型只需实现 Deployer 接口并在 `init()` 自注册
-- **进程管理器** - PID 文件跟踪运行中的进程，管理服务生命周期
-- **邮件通知器** - 通过 SMTP 或 Resend API 发送部署结果邮件
-
-更多设计细节见 `docs/superpowers/specs/`（生命周期重构设计、合并队列设计等）。
+旧版 `services[]`（type 驱动）与新版 `pipelines[]`（组件编排）**不兼容**，需要手改。每个旧 `services[]` 项改成一条 pipeline：`name/repo/workspace/timeout` 原样搬，`type` 语义拆解成对应的组件节点序列（旧 `deploy.health` 就绪等待 → shell 节点里自己写轮询 curl，旧 `build.command` → shell 节点，旧 artifact 归位 → shell 节点 cp/rsync）。五种旧 type 的完整改写示例见 **`docs/migration-v2.md`**。
 
 ## 开发
 
@@ -436,11 +301,11 @@ go test ./...
 go vet ./...
 ```
 
-### 新增部署模型
+### 新增组件
 
-1. 在 `plugins/<type>/` 实现 Deployer 接口（`Build/Stage/Status`；有独立进程再实现 `Start/Stop`），`init()` 中调用 `registry.Register`
-2. 在 `plugins/plugins.go` 加 blank import，在 `internal/config/validate.go` 的 `supportedTypes` 加类型名
-3. （可选）更新 `config.yaml.example` 与配置向导模板
+1. 在 `internal/components/` 新建文件，实现 `Component` 接口（`Run(ctx, Request) (Results, error)`），`init()` 中调用 `components.Register("<type名>", ...)`
+2. 在 `internal/config/validate.go` 的 `known` 检查（自动从注册表取）无需手改；节点 `type` 即可使用
+3. 更新 `config.yaml.example` 与 `docs/migration-v2.md` 的组件说明
 
 ## 许可证
 
