@@ -10,8 +10,8 @@ import (
 	"strings"
 )
 
-// RunWizard runs an interactive wizard that prompts the user for configuration
-// values and writes a YAML config file (new two-tier format) at configPath.
+// RunWizard 以交互方式引导用户填写配置，生成 pipeline 格式的 YAML 配置文件
+// 并写到 configPath。
 func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 	scanner := bufio.NewScanner(r)
 	writer := bufio.NewWriter(w)
@@ -41,23 +41,12 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 	}
 	host := ask("Listen host", "0.0.0.0")
 
-	name := ask("Service name", "")
-	svcType := ask("Service type (jvm/static/node/python/docker)", "jvm")
+	name := ask("Work item name", "")
 	repoURL := ask("Git repository URL", "")
 	branch := ask("Deploy branch", "main")
 	workspace := ask("Workspace directory", "")
-	buildCmd := ask("Build command", defaultBuildCommand(svcType, name))
-
-	runCmd := ""
-	if svcType == "jvm" || svcType == "springboot" {
-		runCmd = ask("Run command (pure launch, no nohup/&)", "java -jar target/"+name+".jar")
-	}
-
-	// deploy.health 所有模型必填：就绪判定与 status 探测共用。
-	// 空输入时给出默认占位（http://localhost:<模型常用端口>/health），仍会写入配置，
-	// 由后续 config 校验兜底提示。
-	healthURL := ask("Health check URL (required, readiness + status probe)", defaultHealthURL(svcType))
-	healthInterval := ask("Health poll interval (optional, default 10s)", "")
+	buildCmd := ask("Build command", "mvn package -DskipTests")
+	deployCmd := ask("Deploy command (e.g. systemctl restart <service>)", "")
 
 	smtpHost := ask("SMTP host (optional, e.g. smtp.qq.com)", "")
 	smtpPortStr := ask("SMTP port", "465")
@@ -81,32 +70,60 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 		}
 	}
 
-	// Build YAML (new two-tier format) directly for full control of ordering
-	// and comments.
+	// 直接手写 pipeline 格式 YAML，控制输出顺序与注释。
 	var b strings.Builder
-	fmt.Fprintf(&b, "# deployd 全局配置\n\n")
+	fmt.Fprintf(&b, "# deployd 配置（由 deployd config 生成）\n\n")
 	fmt.Fprintf(&b, "server:\n  host: %q\n  port: %d\n\n", host, port)
-	fmt.Fprintf(&b, "webhook:\n  secret: \"\"\n\n")
 	fmt.Fprintf(&b, "smtp:\n  host: %q\n  port: %d\n  username: %q\n  token: %q\n  tls: %v\n\n",
 		smtpHost, smtpPort, smtpUser, smtpToken, smtpTLSBool)
-	fmt.Fprintf(&b, "resend:\n  api_key: \"\"\n  from: \"\"\n\n")
 	fmt.Fprintf(&b, "notifications:\n")
 	if len(notificationTo) == 0 {
 		fmt.Fprintf(&b, "  to: []\n\n")
 	} else {
-		fmt.Fprintf(&b, "  to:\n")
+		quoted := make([]string, 0, len(notificationTo))
 		for _, addr := range notificationTo {
-			fmt.Fprintf(&b, "    - %q\n", addr)
+			quoted = append(quoted, fmt.Sprintf("%q", addr))
 		}
-		fmt.Fprintf(&b, "\n")
+		fmt.Fprintf(&b, "  to: [%s]\n\n", strings.Join(quoted, ", "))
 	}
-	fmt.Fprintf(&b, "services:\n")
+	fmt.Fprintf(&b, "pipelines:\n")
 	fmt.Fprintf(&b, "  - name: %q\n", name)
-	fmt.Fprintf(&b, "    type: %q\n", svcType)
-	fmt.Fprintf(&b, "    repo:\n      url: %q\n      branch: %q\n", repoURL, branch)
 	fmt.Fprintf(&b, "    workspace: %q\n", workspace)
-	fmt.Fprintf(&b, "    build:\n      command: %q\n", buildCmd)
-	writeDeployBlock(&b, svcType, name, runCmd, healthURL, healthInterval)
+	fmt.Fprintf(&b, "    timeout: \"45m\"\n")
+	fmt.Fprintf(&b, "    stages:\n")
+	// git 拉取节点：url/branch 是 webhook 匹配的字面量
+	fmt.Fprintf(&b, "      - name: 拉取代码\n")
+	fmt.Fprintf(&b, "        type: git\n")
+	fmt.Fprintf(&b, "        params:\n")
+	fmt.Fprintf(&b, "          url: %q\n", repoURL)
+	fmt.Fprintf(&b, "          branch: [%q]\n", branch)
+	// 构建节点
+	fmt.Fprintf(&b, "      - name: 构建\n")
+	fmt.Fprintf(&b, "        type: shell\n")
+	fmt.Fprintf(&b, "        params:\n")
+	fmt.Fprintf(&b, "          sh: %q\n", buildCmd)
+	// 部署节点
+	fmt.Fprintf(&b, "      - name: 部署\n")
+	fmt.Fprintf(&b, "        type: shell\n")
+	fmt.Fprintf(&b, "        params:\n")
+	fmt.Fprintf(&b, "          sh: %q\n", deployCmd)
+	// 主流程成功后通知
+	fmt.Fprintf(&b, "      - name: 成功通知\n")
+	fmt.Fprintf(&b, "        type: email\n")
+	fmt.Fprintf(&b, "        params:\n")
+	fmt.Fprintf(&b, "          subject: \"${system.name} 部署成功 ${system.commit}\"\n")
+	fmt.Fprintf(&b, "          body: \"分支 ${system.branch} 由 ${system.author} 触发\"\n")
+	// 主流程失败后通知
+	fmt.Fprintf(&b, "      - name: 失败通知\n")
+	fmt.Fprintf(&b, "        type: email\n")
+	fmt.Fprintf(&b, "        when: failure\n")
+	fmt.Fprintf(&b, "        params:\n")
+	fmt.Fprintf(&b, "          subject: \"${system.name} 部署失败于 ${system.failed_stage}\"\n")
+	fmt.Fprintf(&b, "          body: \"${system.message}\"\n")
+	// 无论成败都清理工作空间
+	fmt.Fprintf(&b, "      - name: 清理工作空间\n")
+	fmt.Fprintf(&b, "        type: cleanup\n")
+	fmt.Fprintf(&b, "        when: always\n")
 
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		return err
@@ -118,66 +135,4 @@ func RunWizard(w io.Writer, r io.Reader, configPath string) error {
 	fmt.Fprintf(writer, "\nConfiguration saved to %s\n", configPath)
 	writer.Flush()
 	return nil
-}
-
-// defaultBuildCommand returns a sensible build command default for a type.
-func defaultBuildCommand(svcType, name string) string {
-	switch svcType {
-	case "jvm", "springboot":
-		return "mvn package -DskipTests"
-	case "static", "node":
-		return "npm run build"
-	case "python":
-		return "pip install -r requirements.txt"
-	case "docker":
-		return "docker build -t " + name + ":latest ."
-	}
-	return ""
-}
-
-// defaultHealthURL 按模型给出常用端口的 health 占位默认值（用户仍应按实际改写）。
-func defaultHealthURL(svcType string) string {
-	switch svcType {
-	case "jvm", "springboot":
-		return "http://localhost:8080/health"
-	case "static":
-		return "https://example.com/health"
-	case "node":
-		return "http://localhost:3000/health"
-	default: // python / docker
-		return "http://localhost:8000/health"
-	}
-}
-
-// writeDeployBlock emits the type-specific deploy: section. jvm uses the
-// run command asked earlier; others emit a template for the user to fill in
-// as their plugin lands. health/healthInterval 为所有模型通用字段，总是写入。
-func writeDeployBlock(b *strings.Builder, svcType, name, runCmd, healthURL, healthInterval string) {
-	writeCommon := func() {
-		fmt.Fprintf(b, "      health: %q\n", healthURL)
-		if healthInterval != "" {
-			fmt.Fprintf(b, "      health_interval: %q\n", healthInterval)
-		}
-	}
-	switch svcType {
-	case "jvm", "springboot":
-		fmt.Fprintf(b, "    deploy:\n      run: %q\n", runCmd)
-		writeCommon()
-	case "static":
-		fmt.Fprintf(b, "    deploy:\n      artifact: \"dist/*\"\n      dest: \"/usr/share/nginx/html/%s\"\n      nginx_reload: true\n", name)
-		writeCommon()
-	case "node":
-		fmt.Fprintf(b, "    deploy:\n      run: \"node server.js\"\n")
-		writeCommon()
-		fmt.Fprintf(b, "      env:\n        NODE_ENV: \"production\"\n")
-	case "python":
-		fmt.Fprintf(b, "    deploy:\n      venv: \".venv\"\n      run: \"uvicorn main:app --host 0.0.0.0 --port 8000\"\n      # migrate: \".venv/bin/alembic upgrade head\"\n")
-		writeCommon()
-	case "docker":
-		fmt.Fprintf(b, "    deploy:\n      image: \"%s:latest\"\n      container: \"%s\"\n      ports: [\"8000:8000\"]\n", name, name)
-		writeCommon()
-	default:
-		fmt.Fprintf(b, "    # deploy:\n    #   run: \"...\"\n")
-		writeCommon()
-	}
 }

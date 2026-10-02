@@ -19,17 +19,20 @@ server:
 webhook:
   secret: "my-secret-token"
 
-services:
-  - name: "test-service"
-    type: "springboot"
-    repo:
-      url: "https://github.com/user/repo.git"
-      branch: "main"
-    workspace: "/opt/deployd/apps/test-service"
-    build:
-      command: "mvn package -DskipTests"
-    run:
-      command: "java -jar test-service.jar"
+pipelines:
+  - name: "test-pipeline"
+    workspace: "/opt/deployd/apps/test-pipeline"
+    timeout: "45m"
+    stages:
+      - name: 拉取代码
+        type: git
+        params:
+          url: "https://github.com/user/repo.git"
+          branch: ["main"]
+      - name: 构建
+        type: shell
+        params:
+          sh: "mvn package -DskipTests"
 `)
 
 	var cfg AppConfig
@@ -46,122 +49,57 @@ services:
 	if cfg.Webhook.Secret != "my-secret-token" {
 		t.Errorf("expected webhook secret 'my-secret-token', got '%s'", cfg.Webhook.Secret)
 	}
-	if len(cfg.Services) != 1 {
-		t.Fatalf("expected 1 service, got %d", len(cfg.Services))
+	if len(cfg.Pipelines) != 1 {
+		t.Fatalf("expected 1 pipeline, got %d", len(cfg.Pipelines))
 	}
 
-	svc := cfg.Services[0]
-	if svc.Name != "test-service" {
-		t.Errorf("expected service name 'test-service', got '%s'", svc.Name)
+	p := cfg.Pipelines[0]
+	if p.Name != "test-pipeline" {
+		t.Errorf("expected pipeline name 'test-pipeline', got '%s'", p.Name)
 	}
-	if svc.Type != "springboot" {
-		t.Errorf("expected service type 'springboot', got '%s'", svc.Type)
+	if p.Workspace != "/opt/deployd/apps/test-pipeline" {
+		t.Errorf("expected workspace '/opt/deployd/apps/test-pipeline', got '%s'", p.Workspace)
 	}
-	if svc.Repo.URL != "https://github.com/user/repo.git" {
-		t.Errorf("expected repo URL 'https://github.com/user/repo.git', got '%s'", svc.Repo.URL)
+	if p.Stages[0].Type != "git" {
+		t.Errorf("expected first stage type 'git', got '%s'", p.Stages[0].Type)
 	}
-	if svc.Repo.Branch != "main" {
-		t.Errorf("expected repo branch 'main', got '%s'", svc.Repo.Branch)
-	}
-	if svc.Workspace != "/opt/deployd/apps/test-service" {
-		t.Errorf("expected workspace '/opt/deployd/apps/test-service', got '%s'", svc.Workspace)
-	}
-	if svc.Build.Command.String() != "mvn package -DskipTests" {
-		t.Errorf("expected build command 'mvn package -DskipTests', got '%s'", svc.Build.Command.String())
+	if p.Stages[0].Params["url"] != "https://github.com/user/repo.git" {
+		t.Errorf("expected git url, got '%v'", p.Stages[0].Params["url"])
 	}
 }
 
 func TestParseMultiLineCommand(t *testing.T) {
-	// build.command accepts a multi-line scalar; Command preserves it verbatim.
-	yamlContent := []byte(`
+	// shell 节点的 sh 接受多行标量，Params 原样保留（含换行）。
+	cfg := loadStr(t, `
 server:
   host: "localhost"
   port: 8080
 
-services:
+pipelines:
   - name: "multiline-test"
-    type: "jvm"
     workspace: "/tmp/test"
-    build:
-      command: |
-        echo "step one"
-        echo "step two"
+    stages:
+      - name: 构建
+        type: shell
+        params:
+          sh: |
+            echo "step one"
+            echo "step two"
 `)
-
-	var cfg AppConfig
-	if err := yaml.Unmarshal(yamlContent, &cfg); err != nil {
-		t.Fatalf("failed to unmarshal config: %v", err)
+	if len(cfg.Pipelines) != 1 {
+		t.Fatalf("expected 1 pipeline, got %d", len(cfg.Pipelines))
 	}
 
-	if len(cfg.Services) != 1 {
-		t.Fatalf("expected 1 service, got %d", len(cfg.Services))
-	}
-
-	buildCmd := cfg.Services[0].Build.Command.String()
+	buildCmd, _ := cfg.Pipelines[0].Stages[0].Params["sh"].(string)
 	newlineCount := strings.Count(buildCmd, "\n")
 	if newlineCount < 1 {
 		t.Errorf("expected multi-line command with newlines, got %d in:\n%s", newlineCount, buildCmd)
 	}
 }
 
-func TestDeployNodeDecoding(t *testing.T) {
-	yamlContent := []byte(`
-services:
-  - name: "hello1"
-    type: "jvm"
-    deploy:
-      run: "java -jar app.jar"
-      artifact: "target/*.jar"
-      dest: "/opt/dest"
-`)
-	var cfg AppConfig
-	if err := yaml.Unmarshal(yamlContent, &cfg); err != nil {
-		t.Fatal(err)
-	}
-	svc := cfg.Services[0]
-	if svc.Deploy.Kind == 0 {
-		t.Fatal("Deploy node is zero -- deploy: block was not captured")
-	}
-	var dc struct {
-		Run      string `yaml:"run"`
-		Artifact string `yaml:"artifact"`
-		Dest     string `yaml:"dest"`
-	}
-	if err := svc.Deploy.Decode(&dc); err != nil {
-		t.Fatalf("Decode failed: %v", err)
-	}
-	if dc.Run != "java -jar app.jar" {
-		t.Errorf("Run = %q, want java -jar app.jar", dc.Run)
-	}
-	if dc.Artifact != "target/*.jar" {
-		t.Errorf("Artifact = %q, want target/*.jar", dc.Artifact)
-	}
-	if dc.Dest != "/opt/dest" {
-		t.Errorf("Dest = %q, want /opt/dest", dc.Dest)
-	}
-}
-
-func TestDeployNodeAbsent(t *testing.T) {
-	// No deploy: block -> zero node, no panic on presence check.
-	yamlContent := []byte(`
-services:
-  - name: "hello1"
-    type: "jvm"
-    build:
-      command: "mvn package"
-`)
-	var cfg AppConfig
-	if err := yaml.Unmarshal(yamlContent, &cfg); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Services[0].Deploy.Kind != 0 {
-		t.Errorf("expected zero Deploy node, got Kind=%d", cfg.Services[0].Deploy.Kind)
-	}
-}
-
 func TestLoadExampleConfig(t *testing.T) {
-	// The repo's config.yaml.example must parse and validate against the new
-	// two-tier schema (catches drift between the template and the parser).
+	// The repo's config.yaml.example must parse and validate against the
+	// pipeline schema (catches drift between the template and the parser).
 	path := filepath.Join("..", "..", "config.yaml.example")
 	if _, err := os.Stat(path); err != nil {
 		t.Skip("config.yaml.example not found at", path)
@@ -173,8 +111,8 @@ func TestLoadExampleConfig(t *testing.T) {
 	if errs := Validate(cfg); len(errs) != 0 {
 		t.Fatalf("config.yaml.example failed validation: %v", errs)
 	}
-	if len(cfg.Services) == 0 {
-		t.Fatal("expected at least one service in config.yaml.example")
+	if len(cfg.Pipelines) == 0 {
+		t.Fatal("expected at least one pipeline in config.yaml.example")
 	}
 }
 
@@ -190,7 +128,7 @@ server:
 webhook:
   secret: ""
 
-services: []
+pipelines: []
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write temp config file: %v", err)
@@ -221,9 +159,11 @@ func TestLoadInvalidYAML(t *testing.T) {
 server:
   host: "0.0.0.0"
   port: not_a_number
-services:
+pipelines:
   - name: test
-    type: [invalid yaml
+    stages:
+      - name: x
+        type: [invalid yaml
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write temp config file: %v", err)
@@ -253,7 +193,7 @@ notifications:
     - "team@example.com"
     - "ops@example.com"
 
-services: []
+pipelines: []
 `)
 
 	var cfg AppConfig
@@ -301,7 +241,7 @@ notifications:
   to:
     - "admin@example.com"
 
-services: []
+pipelines: []
 `)
 
 	var cfg AppConfig
@@ -401,7 +341,7 @@ func TestDefaultConfig_StaleRecordedPathIgnored(t *testing.T) {
 }
 
 // loadStr 写入临时文件后用 Load 加载，便于用完整 yaml 字符串驱动 Load 路径
-// （含 parseCommonDeployFields 等中心解析步骤）。
+// （含 warnUnknownFields/ExtractTrigger 等加载期逻辑）。
 func loadStr(t *testing.T, yamlStr string) *AppConfig {
 	t.Helper()
 	dir := t.TempDir()
@@ -416,75 +356,7 @@ func loadStr(t *testing.T, yamlStr string) *AppConfig {
 	return cfg
 }
 
-// yamlNode 把一段 yaml 字符串解析成 yaml.Node（取 DocumentNode 下的内容节点，
-// 形状与 svc.Deploy 一致：MappingNode 而非 DocumentNode）。
-func yamlNode(t *testing.T, yamlStr string) yaml.Node {
-	t.Helper()
-	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(yamlStr), &doc); err != nil {
-		t.Fatalf("unmarshal yaml node: %v", err)
-	}
-	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
-		return *doc.Content[0]
-	}
-	return doc
-}
-
-func TestParsesHealthFromDeploy(t *testing.T) {
-	cfg := loadStr(t, `
-services:
-  - name: s1
-    type: jvm
-    workspace: /tmp/s1
-    build: { command: "true" }
-    deploy:
-      run: "java -jar app.jar"
-      health: "http://localhost:8080/health"
-      health_interval: "3s"
-`)
-	s := cfg.Services[0]
-	if s.HealthURL != "http://localhost:8080/health" {
-		t.Fatalf("health url not parsed: %q", s.HealthURL)
-	}
-	if d, _ := s.HealthIntervalDuration(); d != 3*time.Second {
-		t.Fatalf("interval not parsed: %v", d)
-	}
-}
-
-func TestHealthIntervalDefault(t *testing.T) {
-	cfg := loadStr(t, `
-services:
-  - name: s1
-    type: jvm
-    workspace: /tmp/s1
-    build: { command: "true" }
-    deploy: { run: "x", health: "http://x/h" }
-`)
-	if d, _ := cfg.Services[0].HealthIntervalDuration(); d != 10*time.Second {
-		t.Fatalf("default interval want 10s got %v", d)
-	}
-}
-
-func TestStrictDecodeDeployIgnoresHealth(t *testing.T) {
-	// jvm deploy 块含 health（通用字段），StrictDecodeDeploy 不应报「未知字段」
-	node := yamlNode(t, `artifact: target/*.jar
-run: java -jar x.jar
-health: http://x/h
-health_interval: 5s
-`)
-	var dc struct {
-		Artifact string `yaml:"artifact"`
-		Run      string `yaml:"run"`
-	}
-	if err := StrictDecodeDeploy(node, &dc); err != nil {
-		t.Fatalf("health/health_interval 应被白名单忽略, got: %v", err)
-	}
-	if dc.Artifact != "target/*.jar" {
-		t.Fatalf("artifact not decoded: %q", dc.Artifact)
-	}
-}
-
-func TestServiceTimeoutDuration(t *testing.T) {
+func TestPipelineTimeoutDuration(t *testing.T) {
 	cases := []struct {
 		timeout string
 		want    time.Duration
@@ -497,8 +369,8 @@ func TestServiceTimeoutDuration(t *testing.T) {
 		{"fast", 0, true},
 	}
 	for _, c := range cases {
-		s := ServiceConfig{Timeout: c.timeout}
-		got, err := s.TimeoutDuration()
+		p := PipelineConfig{Timeout: c.timeout}
+		got, err := p.TimeoutDuration()
 		if c.wantErr {
 			if err == nil {
 				t.Errorf("timeout %q: expected error", c.timeout)

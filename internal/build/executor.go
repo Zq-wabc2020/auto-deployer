@@ -2,11 +2,7 @@ package build
 
 import (
 	"context"
-	"fmt"
-	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -52,50 +48,4 @@ func RunCommandCtx(ctx context.Context, cmd *exec.Cmd) error {
 		<-done
 		return ctx.Err()
 	}
-}
-
-// ExecuteBuild runs the given command in the workspace directory via `sh -c`,
-// so shell semantics (&&, |, >, $VAR, etc.) work. It sets JAVA_HOME if a
-// .java-version file exists in the workspace. The command is aborted (whole
-// process group killed) when ctx is canceled or times out. out receives the
-// command output.
-func ExecuteBuild(ctx context.Context, workspace, command string, out io.Writer) error {
-	if command == "" {
-		return fmt.Errorf("build command is empty")
-	}
-
-	cmd := exec.Command("sh", "-c", command)
-	cmd.Dir = workspace
-	cmd.Stdout = out
-	cmd.Stderr = out
-
-	// Auto-detect Java version from .java-version file
-	if javaVersion := DetectJavaVersion(workspace); javaVersion != "" {
-		if javaHome := FindJavaHome(javaVersion); javaHome != "" {
-			cmd.Env = MergeEnv(os.Environ(), map[string]string{
-				"JAVA_HOME": javaHome,
-				"PATH":      filepath.Join(javaHome, "bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
-			})
-		}
-	}
-
-	fmt.Fprintf(out, "[build] executing: %s\n", command)
-	if err := RunCommandCtx(ctx, cmd); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("build aborted (timeout or canceled): %w", ctx.Err())
-		}
-		return fmt.Errorf("build failed: %w", err)
-	}
-	fmt.Fprintln(out, "[build] build completed successfully")
-	return nil
-}
-
-// DetectJavaVersion reads .java-version file from workspace ("" if absent).
-func DetectJavaVersion(workspace string) string {
-	versionFile := filepath.Join(workspace, ".java-version")
-	data, err := os.ReadFile(versionFile)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
 }

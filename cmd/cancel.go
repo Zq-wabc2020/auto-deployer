@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/auto-deployer/auto-deployer/internal/deploylock"
-	"github.com/auto-deployer/auto-deployer/internal/servstate"
+	"github.com/auto-deployer/auto-deployer/internal/runstate"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +27,7 @@ func runCancel(serviceName string) error {
 		fmt.Printf("工作项 %s 未在执行/排队中，无需取消\n", serviceName)
 		return nil
 	}
-	if err := servstate.WriteCancel(serviceName); err != nil {
+	if err := runstate.WriteCancel(serviceName); err != nil {
 		return fmt.Errorf("写取消信号失败: %w", err)
 	}
 	fmt.Printf("已向 %s 发出取消信号，执行进程将中止\n", serviceName)

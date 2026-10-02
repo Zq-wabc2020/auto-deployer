@@ -2,12 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/auto-deployer/auto-deployer/internal/config"
-	"github.com/auto-deployer/auto-deployer/internal/process"
+	"github.com/auto-deployer/auto-deployer/internal/daemon"
 	"github.com/auto-deployer/auto-deployer/internal/runstate"
 	"github.com/auto-deployer/auto-deployer/internal/term"
 	"github.com/spf13/cobra"
@@ -22,9 +20,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "查看所有工作项最后执行状态",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		home, _ := os.UserHomeDir()
-		mgr := process.NewManager(filepath.Join(home, ".deployd", "run", "deployd.pid"))
-		fmt.Printf("deployd: %s\n", mgr.Status())
+		fmt.Printf("deployd: %s\n", daemon.DaemonStatus())
 
 		path := configFile
 		if path == "" {

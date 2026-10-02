@@ -12,7 +12,6 @@ import (
 	"github.com/auto-deployer/auto-deployer/internal/config"
 	"github.com/auto-deployer/auto-deployer/internal/deployqueue"
 	"github.com/auto-deployer/auto-deployer/internal/logger"
-	"github.com/auto-deployer/auto-deployer/internal/process"
 	"github.com/auto-deployer/auto-deployer/internal/webhook"
 )
 
@@ -85,7 +84,7 @@ func Start(configPath string) error {
 	pidDir := filepath.Join(homeDir(configPath), pidDirName)
 	_ = os.MkdirAll(pidDir, 0755)
 	pidFile := filepath.Join(pidDir, "deployd.pid")
-	mgr := process.NewManager(pidFile)
+	mgr := NewPIDFile(pidFile)
 
 	logDir := filepath.Join(homeDir(configPath), ".deployd")
 	_ = os.MkdirAll(logDir, 0755)
@@ -102,7 +101,7 @@ func Start(configPath string) error {
 
 	// 9. Check if already running
 	if mgr.Status() == "running" {
-		existingPID, _ := mgr.ReadPID()
+		existingPID, _ := mgr.Read()
 		return fmt.Errorf("deployd is already running (pid: %d)", existingPID)
 	}
 
@@ -124,7 +123,7 @@ func Start(configPath string) error {
 
 	// 11. Write PID
 	myPID := os.Getpid()
-	if err := mgr.WritePID(myPID); err != nil {
+	if err := mgr.Write(myPID); err != nil {
 		return err
 	}
 
@@ -142,7 +141,7 @@ func Start(configPath string) error {
 	fmt.Printf("[daemon] received %s, shutting down...\n", sig)
 
 	// Cleanup
-	_ = mgr.CleanupPID()
+	_ = mgr.Cleanup()
 	_ = logFile.Close()
 	return nil
 }

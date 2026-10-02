@@ -1,8 +1,11 @@
-# deployd 全局配置
+# deployd 配置
 #
-# 配置按"部署模型"(type)组织服务。type 决定 deploy: 块的结构。
-# 通用字段（所有模型）：name / type / repo / workspace / build
-# 策略字段（deploy:）：结构由 type 决定，由对应插件解析
+# 配置以流水线（pipelines）组织工作项：每个工作项由多个 stage 节点组成。
+# - git 节点决定 webhook 匹配（url/branch 必须是字面量，不能写 ${...} 引用）
+# - shell 节点执行构建/部署命令
+# - email 节点发送通知；when 为空=主流程成功时执行
+# - cleanup 节点清理工作空间
+# 节点 when 取值：空（主流程）/ failure（主流程失败时）/ always（无论成败）
 
 # ─────────────── 监听地址 ───────────────
 server:
@@ -28,91 +31,38 @@ notifications:
   to:                      # 额外通知收件人（代码提交作者始终作为默认收件人）
     - "admin@example.com"
 
-# ─────────────── 服务列表 ───────────────
-services:
-  # ── jvm：Spring Boot 等 java -jar 服务 ──
-  - name: "my-springboot-app"
-    type: "jvm"                      # 部署模型；也接受兼容别名 springboot
-    repo:
-      url: "https://github.com/user/repo.git"   # Git 仓库地址（HTTPS 会自动转 SSH）
-      branch: "main"                            # 部署分支
-    workspace: "/opt/deployd/apps/my-springboot-app"   # 代码克隆与工作目录
-    timeout: "45m"                  # 可选：fetch+build+stage+就绪 总超时(默认 30m，所有模型通用)
-    build:
-      command: "mvn package -DskipTests"        # 通用：构建命令(shell)，支持 && 或列表形式
-      # command: ["npm ci", "npm run build"]    #   列表形式：依次执行
-    deploy:                         # jvm 策略层（结构由 type=jvm 决定）
-      # artifact: "target/*.jar"   # 可选：产物 glob 或列表(如 ["a.jar","b.jar"])。不填=原地启动(run 里写 target/xxx.jar 相对路径)
-      # dest: "/opt/app"           # 可选：产物归位目录。填了才拷贝(替代旧 moveJarToRoot 行为)
-      run: "java -jar target/app.jar"           # 纯启动命令，不要写 nohup/&（后台化由工具负责）
-      health: "http://localhost:8080/health"   # 必填：HTTP 健康检查 URL（就绪轮询/status 判定，所有模型通用）
-      # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
-      # env:                        # 可选：运行时环境变量
-      #   JAVA_OPTS: "-Xms100m -Xmx128m"
-
-  # ── static：Vue/React 等静态站点（无独立进程，nginx 托管）──
-  # - name: "web-vue"
-  #   type: "static"
-  #   repo:
-  #     url: "https://github.com/user/vue-app.git"
-  #     branch: "main"
-  #   workspace: "/opt/web-vue"
-  #   timeout: "45m"                       #   可选：fetch+build+stage+就绪 总超时(默认 30m，所有模型通用)
-  #   build:
-  #     command: "npm run build"
-  #   deploy:
-  #     artifact: "dist"                          # 构建产物目录或 glob（内容整体拷贝）；也支持列表如 ["dist/index.html","dist/app.js"]
-  #     dest: "/usr/share/nginx/html/vue"        # 拷贝到 nginx 目录
-  #     nginx_reload: true                       # 部署后执行 nginx -s reload
-  #     health: "https://app.example.com/health" # 必填：就绪判定/status 均通过该 URL(HTTP 2xx/3xx=running)
-  #     # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
-
-  # ── node：Next.js SSR / Express 等长驻 Node 服务 ──
-  # 源码即产物(默认)：不配 artifact，run 直接在 workspace 启动(node server.js)。
-  # 也可归位：配 artifact+dest，把构建产物(如 .output)拷到 dest，run 在 dest 执行，
-  # 运行中的服务与下一次构建互不干扰（workspace 不清理，保留 node_modules 做增量构建）。
-  # - name: "web-ssr"
-  #   type: "node"
-  #   repo: { url: "...", branch: "main" }
-  #   workspace: "/opt/web-ssr"
-  #   build: { command: "npm run build" }
-  #   deploy:
-  #     # artifact: ".output"            # 可选：产物目录/glob 或列表。不填=源码即产物(原地启动)
-  #     # dest: "/opt/web-ssr-run"       # 可选：归位目录。填了才拷贝，run 也在该目录执行
-  #     run: "node .output/server.mjs"   # 纯启动命令，不要写 nohup/&/pm2(后台化由工具负责)
-  #     health: "http://localhost:3000/health"  # 必填：就绪判定/status 均通过该 URL
-  #     # health_interval: "10s"                 # 可选：就绪轮询间隔(默认 10s)
-  #     env: { NODE_ENV: "production" }
-
-  # ── python：FastAPI/Flask 等 ASGI/WSGI 服务 ──
-  # - name: "api"
-  #   type: "python"
-  #   repo: { url: "...", branch: "main" }
-  #   workspace: "/opt/api"
-  #   build:
-  #     command:
-  #       - "python3.11 -m venv .venv"            # 创建虚拟环境
-  #       - ".venv/bin/pip install ."             # 装依赖（pyproject.toml）
-  #   deploy:
-  #     venv: ".venv"                             # 虚拟环境目录
-  #     migrate: ".venv/bin/alembic upgrade head" # 可选：迁移(部署专属,不随重启执行)
-  #     run: ".venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"
-  #     health: "http://localhost:8000/health"    # 必填：就绪判定/status 均通过该 URL
-  #     # health_interval: "10s"                  # 可选：就绪轮询间隔(默认 10s)
-  #     env: { DATABASE_URL: "postgresql://..." }   # 可选：运行时环境变量
-
-  # ── docker：容器化服务 ──
-  # - name: "svc-docker"
-  #   type: "docker"
-  #   repo: { url: "...", branch: "main" }
-  #   workspace: "/opt/svc"
-  #   build: { command: "docker build -t app:latest ." }
-  #   deploy:
-  #     image: "app:latest"                       # 镜像
-  #     container: "app"                          # 容器名
-  #     ports: ["8000:8000"]                      # 端口映射
-  #     env: { FOO: "bar" }                       # 可选：容器环境变量
-  #     volumes: ["/data:/data"]                  # 可选：数据卷挂载
-  #     args: ["--memory=512m"]                   # 可选：额外 docker run 参数
-  #     health: "http://localhost:8000/health"    # 必填：就绪判定/status 均通过该 URL
-  #     # health_interval: "10s"                  # 可选：就绪轮询间隔(默认 10s)
+# ─────────────── 工作项列表 ───────────────
+pipelines:
+  - name: "my-app"
+    workspace: "/opt/deployd/apps/my-app"   # 代码克隆与工作目录
+    timeout: "45m"                          # 可选：整条流水线总超时(默认 30m)
+    env:                                    # 可选：环境变量（${env.xxx} 引用）
+      JAVA_OPTS: "-Xms100m -Xmx128m"
+    stages:
+      - name: 拉取代码
+        type: git
+        params:
+          url: "https://github.com/user/repo.git"   # Git 仓库地址（webhook 匹配用字面量）
+          branch: ["main"]                          # 部署分支（webhook 匹配用字面量）
+      - name: 构建
+        type: shell
+        params:
+          sh: "mvn package -DskipTests"       # 构建命令（shell），支持 && 串联
+      - name: 部署
+        type: shell
+        params:
+          sh: "systemctl restart my-app"      # 部署命令（纯启动/重启，不要写 nohup/&）
+      - name: 成功通知
+        type: email
+        params:
+          subject: "${system.name} 部署成功 ${system.commit}"
+          body: "分支 ${system.branch} 由 ${system.author} 触发"
+      - name: 失败通知
+        type: email
+        when: failure
+        params:
+          subject: "${system.name} 部署失败于 ${system.failed_stage}"
+          body: "${system.message}"
+      - name: 清理工作空间
+        type: cleanup
+        when: always

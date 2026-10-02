@@ -2,17 +2,11 @@ package daemon
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/auto-deployer/auto-deployer/internal/config"
-	"github.com/auto-deployer/auto-deployer/internal/deploy"
-	"github.com/auto-deployer/auto-deployer/internal/process"
-	"github.com/auto-deployer/auto-deployer/internal/registry"
 )
 
 const defaultPidDir = ".deployd/run"
@@ -20,7 +14,7 @@ const defaultPidDir = ".deployd/run"
 // Stop stops the deployd daemon.
 func Stop(configPath string) error {
 	pidFile := filepath.Join(homeDir(configPath), defaultPidDir, "deployd.pid")
-	mgr := process.NewManager(pidFile)
+	mgr := NewPIDFile(pidFile)
 
 	if mgr.Status() != "running" {
 		fmt.Println("deployd is not running")
@@ -30,40 +24,19 @@ func Stop(configPath string) error {
 	return mgr.Stop()
 }
 
-// Status shows the status of deployd and all configured services.
+// Status prints the daemon run state.
 func Status(configPath string) error {
 	pidFile := filepath.Join(homeDir(configPath), defaultPidDir, "deployd.pid")
-	mgr := process.NewManager(pidFile)
+	mgr := NewPIDFile(pidFile)
 
 	fmt.Printf("deployd: %s\n", mgr.Status())
-
-	cfgPath := configPath
-	if cfgPath == "" {
-		cfgPath = filepath.Join(homeDir(configPath), "config.yaml")
-	}
-	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		return nil
-	}
-
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		return err
-	}
-
-	// 服务状态走 GetServiceStatusRich（starting/start_failed 持久态 + 插件实时探测），
-	// 不再直读 pid 文件——static 这类无进程模型会恒报 stopped（C2）。
-	for i := range cfg.Services {
-		svc := &cfg.Services[i]
-		st := "unknown"
-		if d, err := registry.Get(svc.Type); err == nil {
-			if s, err := deploy.GetServiceStatusRich(context.Background(), svc, d); err == nil {
-				st = s
-			}
-		}
-		fmt.Printf("  %-30s %s\n", svc.Name, st)
-	}
-
 	return nil
+}
+
+// DaemonStatus 返回 daemon 运行状态字符串（running/stopped/unknown），
+// 供 cmd/status 复用：只读 deployd.pid，不加载配置。
+func DaemonStatus() string {
+	return NewPIDFile(filepath.Join(homeDir(""), defaultPidDir, "deployd.pid")).Status()
 }
 
 // Logs prints the contents of a log file.
