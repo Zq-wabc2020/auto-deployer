@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,10 +46,29 @@ func (s *scriptComp) seq() []string {
 }
 
 var testComp *scriptComp
+var sysProbe *sysProbeComp
+
+// sysProbeComp 记录每次调用时的 req.System 快照，用于断言后置流程的系统参数。
+type sysProbeComp struct{ mu sync.Mutex; systems []map[string]string }
+
+func (c *sysProbeComp) Run(_ context.Context, req components.Request) (components.Results, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.systems = append(c.systems, req.System)
+	return nil, nil
+}
+
+func (c *sysProbeComp) last() map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.systems[len(c.systems)-1]
+}
 
 func TestMain(m *testing.M) {
 	testComp = &scriptComp{}
 	components.Register("test", testComp)
+	sysProbe = &sysProbeComp{}
+	components.Register("sysprobe", sysProbe)
 	os.Exit(m.Run())
 }
 
@@ -224,3 +244,28 @@ func TestCancelRunsAlwaysNotFailure(t *testing.T) {
 }
 
 func writeCancelForTest(name string) error { return runstate.WriteCancel(name) }
+
+// TestPostFlowSystemError 断言：主流程失败后，when:failure 节点能读到
+// system.result=failed、system.failed_stage、system.error（= 失败原因文本），
+// 供失败邮件的「失败阶段/错误信息」行使用。
+func TestPostFlowSystemError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	testComp.calls = nil
+	sysProbe.systems = nil
+	probe := config.StageConfig{Name: "notify-f", Type: "sysprobe", When: "failure"}
+	pl := newPipeline(stage("b", "", "fail"), probe)
+	res := Run(context.Background(), pl, Options{Trigger: "webhook"})
+	if res.Status != "failed" || res.FailedStage != "b" {
+		t.Fatalf("res=%+v", res)
+	}
+	sys := sysProbe.last()
+	if sys["result"] != "failed" || sys["failed_stage"] != "b" {
+		t.Fatalf("后置 system 参数缺失: %+v", sys)
+	}
+	if !strings.Contains(sys["error"], "boom") {
+		t.Fatalf("system.error 应为失败原因文本, got %q", sys["error"])
+	}
+	if sys["trigger"] != "webhook" {
+		t.Fatalf("trigger 应透传, got %q", sys["trigger"])
+	}
+}

@@ -14,7 +14,10 @@ import (
 type Results map[string]string
 
 type Request struct {
-	Params   map[string]any
+	Params map[string]any
+	// System 是工作项系统参数快照（name/trigger/branch/commit/author/message/
+	// result/failed_stage/error），email 组件的内置标准模板用。只读。
+	System   map[string]string
 	Out      io.Writer        // 节点日志流（引擎接好：日志文件 ± 终端）
 	Notifier *notify.Notifier // email 组件用；nil = 未配置 SMTP/Resend
 }

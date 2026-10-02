@@ -128,6 +128,7 @@ func Run(ctx context.Context, pl *config.PipelineConfig, opts Options) *Result {
 	// 后置流程：走父 ctx——总预算耗尽后清理仍要执行（Review Focus #2）
 	ps.System["result"] = res.Status
 	ps.System["failed_stage"] = res.FailedStage
+	ps.System["error"] = res.Error // 失败原因文本（"节点名: 原因"），失败邮件的「错误信息」行用
 	postCtx, cancelPost := context.WithTimeout(ctx, postBudget)
 	defer cancelPost()
 	_ = runFlow(postCtx, pl, ps, st, res, opts, out, say, notifier, true, res.Status)
@@ -207,7 +208,7 @@ func runFlow(ctx context.Context, pl *config.PipelineConfig, ps *param.Set,
 		say("--- [%s] %s ---", stage.Name, stage.Type)
 		start := time.Now()
 		results, err := comp.Run(stageCtx, components.Request{
-			Params: params, Out: out, Notifier: notifier,
+			Params: params, System: ps.System, Out: out, Notifier: notifier,
 		})
 		if err == nil {
 			for k, raw := range stage.Output {
