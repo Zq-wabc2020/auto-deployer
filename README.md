@@ -135,12 +135,12 @@ http://<服务器IP>:<端口>/webhook
 
 端口在配置 `server.port` 指定（模板示例用 9527）。**注意：**
 
-- `server.host: "0.0.0.0"` 会把 webhook 暴露到公网，且当前**无签名验证**（`webhook.secret` 字段未启用）——端口可达即任何人均可伪造 push 触发构建+部署，务必用防火墙 / 反向代理 / 内网隔离限制访问
+- `server.host: "0.0.0.0"` 会把 webhook 暴露到公网。`webhook.secret` 留空 = 不校验签名（端口可达即任何人均可伪造 push 触发构建+部署），**公网部署务必配置密钥**（见下）；配置密钥后对无签名/签名不符的请求一律拒绝（401），配置损坏返回 500
 - 服务器需要有公网 IP 或可通过内网穿透暴露该端口，否则 GitHub/Gitee 无法回调
 
-**GitHub 配置步骤：** 仓库 → Settings → Webhooks → Add webhook → Payload URL 填 `http://<你的服务器IP>:<端口>/webhook` → Content type `application/json` → Secret 可留空（未启用验证）→ 选择 "Just the push event"。
+**GitHub 配置步骤：** 仓库 → Settings → Webhooks → Add webhook → Payload URL 填 `http://<你的服务器IP>:<端口>/webhook` → Content type `application/json` → Secret 填与 `webhook.secret` 相同的值 → 选择 "Just the push event"。deployd 校验 `X-Hub-Signature-256`（HMAC-SHA256，含旧版 `X-Hub-Signature` sha1 兼容）。
 
-**Gitee 配置步骤：** 仓库 → 管理 → WebHooks → 添加 WebHook → URL 填 `http://<你的服务器IP>:<端口>/webhook` → 触发事件选 Push。
+**Gitee 配置步骤：** 仓库 → 管理 → WebHooks → 添加 WebHook → URL 填 `http://<你的服务器IP>:<端口>/webhook` → 触发事件选 Push → 密码填与 `webhook.secret` 相同的值（deployd 校验 `X-Gitee-Token`，也接受 Gitee 加签的 `X-Gitee-Signature`/`X-Gitee-Timestamp`）。
 
 ## 配置说明
 
@@ -179,7 +179,7 @@ pipelines:
 
 | 参数集 | 前缀 | 来源 | 生成时机 |
 |---|---|---|---|
-| 系统参数 | `${system.*}` | name、trigger（manual/webhook）、commit、branch、author、message、pushers（webhook 合并任务的作者列表）、workspace、result（success/failed，仅后置节点有值）、failed_stage | 运行期，每次执行生成一份 |
+| 系统参数 | `${system.*}` | name、trigger（manual/webhook）、commit、branch、author、message、pushers（webhook 合并任务的作者列表）、workspace、default_to（全局 notifications.to + pushers，email to 缺省用）、result（success/failed，仅后置节点有值）、failed_stage、error（失败原因文本，仅后置节点有值） | 运行期，每次执行生成一份 |
 | 环境变量参数 | `${env.*}` | 工作项 `env:` 块 | 配置期定义 |
 | 命令行参数 | `${args.*}` | `deployd exec xxx --foo=bar` → `args.foo=bar`；webhook 触发时为空集 | 触发时 |
 | 节点输出参数 | `${output.<节点名>.<键>}` | 各节点 `output:` 映射结果 | 节点执行后累积 |
@@ -202,7 +202,7 @@ pipelines:
 |---|---|---|---|
 | `git` | `url`*、`branch`*（列表）、`workspace`（缺省 `${system.workspace}`） | `commit`、`changed`（bool，无新提交）、`branch` | fetch 快路径（fetch + reset --hard origin/<branch>）+ 失败回退干净克隆；HTTPS 自动转 SSH |
 | `shell` | `sh`*（单行或多行 YAML 块）、`cwd`（缺省 workspace）、`env`（本次执行额外环境变量） | `exit_code`、`stdout`、`stderr` | `sh -c` 执行，进程组信号（超时/取消杀得干净）；多行块即多行脚本（Jenkins `sh '''` 对应物）；非零退出码 = 失败 |
-| `email` | `to`（缺省 = 全局 `notifications.to` + `system.pushers`）、`subject`*、`body`* | `error`（发送失败信息） | 复用 SMTP/Resend 发送层；subject/body 全参数插值 |
+| `email` | `to`（缺省 = 全局 `notifications.to` + `system.pushers`）、`subject`/`body`（成对可选）、`template`（可选，`default`/`默认模板`） | `error`（发送失败信息） | 复用 SMTP/Resend 发送层；subject/body 全参数插值。**subject/body 都省略 = 内置标准模板**（主题 `[自动部署] ✅/❌ 部署成功/失败: <名>（<手动/自动触发>）`，正文 HTML 表格：服务名/分支/提交记录/状态/时间/变更者，失败邮件追加 失败阶段/错误信息）；`template: "默认模板"` 可显式声明（与省略等价）；**都提供 = 配置显式优先**；只提供一个报错 |
 | `cleanup` | `keep`（glob 列表，缺省 `[".git"]`） | `deleted`（清理条目数） | 删 workspace 下不在 keep 内的一切；`.git` 缺省保留是为了下轮 fetch 快路径 |
 
 `*` = 必填（有缺省值者除外）。节点失败定义：组件返回 error，或节点超时。
