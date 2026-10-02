@@ -117,7 +117,7 @@ deployd stop
 
 | 状态 | 颜色 | 含义 |
 |------|------|------|
-| `running` | 蓝色 | 执行中（含 pid） |
+| `running` | 蓝色 | 执行中 |
 | `success` | 绿色 | 主流程全部节点成功 |
 | `failed` | 红色 | 主流程失败（含超时）；`running` 但锁空 = 执行进程已死，就地改写为 `failed` |
 | `cancelled` | 黄色 | 被取消（always 节点已跑完） |
@@ -163,7 +163,7 @@ pipelines:
         type: git                          # 组件类型：git / shell / email / cleanup
         params: { url: "...", branch: ["main"] }   # 组件参数
         output: { commit: "${commit}" }    # 可选：结果变量 → 命名参数
-        skip: "${args.skip_build}"         # 可选：插值后等于 "true" 即跳过
+        # skip: "${args.skip_build}"       # 可选：插值后等于 "true" 即跳过；引用未传参数会报错（不静默置空）
         when: ""                           # 可选：""(主流程) / failure / always
         timeout: "10m"                     # 可选：单节点超时
       - name: ...
@@ -277,12 +277,12 @@ resend:
 | 五态状态机/健康探测/start_failed 粘性 | **删除** → 流水线执行状态 |
 | PID 文件/进程组信号/僵尸回收 | **删除**（进程生命周期归用户脚本） |
 | svc -s/-t/-r 免构建启停 | **删除**（用户写 restart 流水线或用 systemd） |
-| deploy/cancel 命令 | **变更** → exec / cancel（取消语义变化） |
+| deploy/cancel 命令 | **变更** → exec / cancel（取消语义变化，见第 10 节） |
 | 内置成功/失败邮件 | **保留为可选**（email 组件 + when） |
 | artifact 归位/迁移/nginx reload | **删除**（shell 节点 cp/rsync/nginx -s reload 自理） |
 | timeout 总预算语义 | **完全保留** + 新增节点级 timeout |
 | 日志隔离/彩色 status/配置发现顺序/校验向导 | **完全保留** |
-| 旧 config.yaml | **不兼容**，需手改（见下方迁移指南） |
+| 旧 config.yaml | **不兼容**，需手改（迁移文档给出五种 type → 组件编排对照） |
 
 ## 从旧版本迁移
 

@@ -53,7 +53,8 @@ pipelines:
 
       - name: 构建
         type: shell
-        skip: "${args.skip_build}"           # 可选：插值后等于字符串 "true" 即跳过该节点（exec 时传 --skip_build=true）
+        # skip: "${args.skip_build}"         # 可选：插值后等于字符串 "true" 即跳过该节点（exec 时须传 --skip_build=true）
+        # 注：${args.*} 引用未传参数会报错（不静默置空），被注释以防无参执行时失败
         params:
           sh: "mvn package -DskipTests"      # 单行命令；也支持 | 多行 YAML 块（Jenkins sh ''' 对应物）
         output:                              # shell 结果变量：${exit_code}/${stdout}/${stderr}
@@ -77,7 +78,9 @@ pipelines:
       - name: 成功通知
         type: email
         params:
-          subject: "部署 ${system.name} 成功 ${args.tag}"   # ${args.*} 来自 `deployd exec my-app --tag=v1.2` → args.tag=v1.2
+          # ${args.*} 来自 `deployd exec my-app --tag=v1.2` → args.tag=v1.2；
+          # 引用未传的参数会报错（不静默置空），exec 时须传 --tag
+          subject: "部署 ${system.name} 成功 ${args.tag}"
           body: "分支 ${system.branch}，commit ${output.拉取代码.commit}，触发 ${system.trigger}（${system.author}）"
 
       - name: 失败通知
