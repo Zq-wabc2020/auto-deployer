@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -172,6 +173,23 @@ func TestHandle_Gitee_ValidSignatureTimestamp(t *testing.T) {
 	}
 }
 
+func TestHandle_Gitee_ValidSignedToken(t *testing.T) {
+	setSecretAndConfig(t, "s3cr3t")
+	body := []byte(`{"ref":"main","repository":{"git_http_url":"https://gitee.com/user/repo.git"}}`)
+	ts := "1730000000000"
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-Gitee-Event", "Push Hook")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitee-Timestamp", ts)
+	req.Header.Set("X-Gitee-Token", signGiteeSigned("s3cr3t", ts))
+
+	rr := httptest.NewRecorder()
+	Handle(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
 func TestHandle_Gitee_WrongToken(t *testing.T) {
 	setSecretAndConfig(t, "s3cr3t")
 	body := []byte(`{"ref":"main","repository":{"git_http_url":"https://gitee.com/user/repo.git"}}`)
@@ -326,6 +344,47 @@ func TestVerifySecret_Gitee_TamperedSignature(t *testing.T) {
 	}
 }
 
+func TestVerifySecret_Gitee_SignedToken(t *testing.T) {
+	ts := "1730000000000"
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set(giteeTimestampHeader, ts)
+	req.Header.Set(giteeTokenHeader, signGiteeSigned("seekrit", ts))
+	if err := verifySecret(req, nil, "gitee", "seekrit"); err != nil {
+		t.Errorf("valid signed token rejected: %v", err)
+	}
+}
+
+func TestVerifySecret_Gitee_SignedToken_TamperedTimestamp(t *testing.T) {
+	ts := "1730000000000"
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set(giteeTimestampHeader, ts)
+	req.Header.Set(giteeTokenHeader, signGiteeSigned("seekrit", "1730000000001"))
+	if err := verifySecret(req, nil, "gitee", "seekrit"); err == nil {
+		t.Error("tampered timestamp must fail signed-token verify")
+	}
+}
+
+func TestVerifySecret_Gitee_SignedToken_WrongSecret(t *testing.T) {
+	ts := "1730000000000"
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set(giteeTimestampHeader, ts)
+	req.Header.Set(giteeTokenHeader, signGiteeSigned("other", ts))
+	if err := verifySecret(req, nil, "gitee", "seekrit"); err == nil {
+		t.Error("signed token with wrong secret must fail")
+	}
+}
+
+func TestVerifySecret_Gitee_SignedToken_URLEncoded(t *testing.T) {
+	ts := "1730000000000"
+	token := signGiteeSigned("seekrit", ts)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set(giteeTimestampHeader, ts)
+	req.Header.Set(giteeTokenHeader, url.QueryEscape(token))
+	if err := verifySecret(req, nil, "gitee", "seekrit"); err != nil {
+		t.Errorf("url-encoded signed token rejected: %v", err)
+	}
+}
+
 func TestVerifySecret_EmptySecret_Permissive(t *testing.T) {
 	// 未配置 secret = 不校验（逃生口），任何来源/签名都放行。
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -370,6 +429,14 @@ func signGitee(secret, ts string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(ts))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// signGiteeSigned 按 Gitee 官方「签名密钥」算法生成 X-Gitee-Token 值：
+// base64(HMAC-SHA256(secret, timestamp+"\n"+secret))。
+func signGiteeSigned(secret, ts string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts + "\n" + secret))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func TestParsePayload_GitHub(t *testing.T) {

@@ -140,7 +140,7 @@ http://<服务器IP>:<端口>/webhook
 
 **GitHub 配置步骤：** 仓库 → Settings → Webhooks → Add webhook → Payload URL 填 `http://<你的服务器IP>:<端口>/webhook` → Content type `application/json` → Secret 填与 `webhook.secret` 相同的值 → 选择 "Just the push event"。deployd 校验 `X-Hub-Signature-256`（HMAC-SHA256，含旧版 `X-Hub-Signature` sha1 兼容）。
 
-**Gitee 配置步骤：** 仓库 → 管理 → WebHooks → 添加 WebHook → URL 填 `http://<你的服务器IP>:<端口>/webhook` → 触发事件选 Push → 密码填与 `webhook.secret` 相同的值（deployd 校验 `X-Gitee-Token`，也接受 Gitee 加签的 `X-Gitee-Signature`/`X-Gitee-Timestamp`）。
+**Gitee 配置步骤：** 仓库 → 管理 → WebHooks → 添加 WebHook → URL 填 `http://<你的服务器IP>:<端口>/webhook` → 触发事件选 Push → 密钥（密码或签名密钥）填与 `webhook.secret` 相同的值。deployd 两种 Gitee 认证都支持：密码模式校验 `X-Gitee-Token == secret`；**签名密钥（加签）模式**按 Gitee 官方算法校验 `X-Gitee-Token == base64(HMAC-SHA256(secret, timestamp+"\n"+secret))`（兼容 urlencoded），算法细节见 config.yaml.example 注释。
 
 ## 配置说明
 

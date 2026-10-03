@@ -21,7 +21,8 @@ server:
 # ─────────────── Webhook ───────────────
 webhook:
   secret: ""         # GitHub/Gitee 签名校验密钥：留空 = 不校验（公网暴露可被伪造 push 触发构建+部署，务必配置）；
-                     # 配置后 GitHub 校验 X-Hub-Signature-256（/X-Hub-Signature sha1），Gitee 校验 X-Gitee-Token（或加签的 X-Gitee-Signature/X-Gitee-Timestamp），签名不符一律 401
+                     # 配置后 GitHub 校验 X-Hub-Signature-256（/X-Hub-Signature sha1）；Gitee 密码模式校验 X-Gitee-Token == secret，
+                     # 签名密钥（加签）模式按官方算法校验 X-Gitee-Token == base64(HMAC-SHA256(secret, X-Gitee-Timestamp+"\n"+secret))（兼容 urlencoded）——签名不符一律 401
 
 # ─────────────── 邮件通知 ───────────────
 # SMTP 与 Resend 二选一；都不配置则不发送通知

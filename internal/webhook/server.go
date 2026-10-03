@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -294,15 +295,38 @@ func verifyGitHubSig(r *http.Request, rawBody []byte, secret string) bool {
 	return false
 }
 
-// verifyGiteeSig 校验 Gitee 签名：两方案任一命中即通过——X-Gitee-Token 等于
-// 密钥（密码方案，恒时比较），或 X-Gitee-Timestamp 的 HMAC-SHA256 十六进制
-// 与 X-Gitee-Signature 一致（加签方案，Gitee 对时间戳签名）。
+// verifyGiteeSig 校验 Gitee 签名，三方案任一命中即通过：
+//  1. 密码方案：X-Gitee-Token 等于密钥（恒时比较）。
+//  2. 签名密钥（加签）方案：X-Gitee-Token == base64(HMAC-SHA256(secret,
+//     timestamp+"\n"+secret))——Gitee 官方算法，token 是签名值而非密钥明文；
+//     兼容官方文档 Step3 的 urlEncode（实测发裸 base64，两种都接受）。
+//  3. 旧加签方案（保留兼容）：X-Gitee-Timestamp 的 HMAC-SHA256 十六进制与
+//     X-Gitee-Signature 一致（历史上误以为 Gitee 对时间戳签名，实际不发此头）。
 func verifyGiteeSig(r *http.Request, secret string) bool {
+	// 方案 1：密码方案，X-Gitee-Token == secret 明文。
 	if token := r.Header.Get(giteeTokenHeader); token != "" {
 		if subtle.ConstantTimeCompare([]byte(token), []byte(secret)) == 1 {
 			return true
 		}
+		// 方案 2：签名密钥（加签）方案，token 是对时间戳+密钥的 HMAC 签名。
+		// 只有 token == secret 不成立时才走这条——否则密码模式会被误判。
+		if ts := r.Header.Get(giteeTimestampHeader); ts != "" {
+			stringToSign := ts + "\n" + secret
+			mac := hmac.New(sha256.New, []byte(secret))
+			mac.Write([]byte(stringToSign))
+			expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+			if subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1 {
+				return true
+			}
+			// Gitee 文档 Step3 先 urlEncode 再拼 URL，兼容 urlencoded 的 token。
+			if unescaped, err := url.QueryUnescape(token); err == nil && unescaped != token {
+				if subtle.ConstantTimeCompare([]byte(unescaped), []byte(expected)) == 1 {
+					return true
+				}
+			}
+		}
 	}
+	// 方案 3：旧加签方案，X-Gitee-Signature == hex(HMAC-SHA256(secret, ts))。
 	ts := r.Header.Get(giteeTimestampHeader)
 	sig := r.Header.Get(giteeSigHeader)
 	if ts == "" || sig == "" {
