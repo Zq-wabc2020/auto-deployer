@@ -281,6 +281,8 @@ pipelines:
 ```
 
 > 注意：shell 节点的 `params.env` 值是字面量，不会做 shell 展开——需要在脚本里用 `export PATH=...:$PATH`（如上），不要把 `$PATH` 写进 `params.env`。
+>
+> 另注意：deployd 的 `sh -c` 默认**无 `-e`**（Jenkins Execute shell 是 `sh -xe`）——一行失败脚本会继续跑、只有最后一行退出码算节点成败。想要「一行失败即停」，多行脚本开头写 `set -eu`；要管道严格（`a | b` 只看 b 退出码）再 `set -o pipefail`。
 
 ## docker（容器）
 

@@ -5,6 +5,9 @@
 #   - 第一个 git 节点决定 webhook 匹配（url / branch 必须是字面量，不能写 ${...} 引用）；
 #     没有 git 节点的工作项无法被 webhook 匹配，只能 `deployd exec` 手动触发。
 #   - shell 节点执行构建/部署命令（单行或 | 多行块），非零退出码 = 节点失败。
+#     与 Jenkins「Execute shell」(sh -xe) 不同，sh 默认无 -e：一行失败脚本会继续跑、
+#     只有最后一行的退出码算节点成败——期望失败即停 / 未定义变量报错，脚本首行写
+#     `set -eu`（要管道严格再 `set -o pipefail`，否则 `a | b` 只看 b 的退出码）。
 #   - email 节点发送通知；不配 SMTP/Resend 则不发送（节点会报「未配置发信」失败）。
 #   - cleanup 节点清理工作空间（缺省只保 .git，下轮 git fetch 才能走快路径）。
 # 节点 when 取值：空 = 主流程（fail-fast）/ failure = 仅主流程失败时执行 / always = 无论成败都执行。

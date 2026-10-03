@@ -201,7 +201,7 @@ pipelines:
 | 组件 | params | 结果变量 | 说明 |
 |---|---|---|---|
 | `git` | `url`*、`branch`*（列表）、`workspace`（缺省 `${system.workspace}`） | `commit`、`changed`（bool，无新提交）、`branch` | fetch 快路径（fetch + reset --hard origin/<branch>）+ 失败回退干净克隆；HTTPS 自动转 SSH |
-| `shell` | `sh`*（单行或多行 YAML 块）、`cwd`（缺省 workspace）、`env`（本次执行额外环境变量） | `exit_code`、`stdout`、`stderr` | `sh -c` 执行，进程组信号（超时/取消杀得干净）；多行块即多行脚本（Jenkins `sh '''` 对应物）；非零退出码 = 失败 |
+| `shell` | `sh`*（单行或多行 YAML 块）、`cwd`（缺省 workspace）、`env`（本次执行额外环境变量） | `exit_code`、`stdout`、`stderr` | `sh -c` 执行，进程组信号（超时/取消杀得干净）；多行块即多行脚本（Jenkins `sh '''` 对应物）；非零退出码 = 失败。**默认无 `-e`**（Jenkins「Execute shell」是 `sh -xe`）：期望一行失败即停、未定义变量报错，脚本首行写 `set -eu`；管道严格再 `set -o pipefail`（否则 `a \| b` 只看 b 的退出码） |
 | `email` | `to`（缺省 = 全局 `notifications.to` + `system.pushers`）、`subject`/`body`（成对可选）、`template`（可选，`default`/`默认模板`） | `error`（发送失败信息） | 复用 SMTP/Resend 发送层；subject/body 全参数插值。**subject/body 都省略 = 内置标准模板**（主题 `[自动部署] ✅/❌ 部署成功/失败: <名>（<手动/自动触发>）`，正文 HTML 表格：服务名/分支/提交记录/状态/时间/变更者，失败邮件追加 失败阶段/错误信息）；`template: "默认模板"` 可显式声明（与省略等价）；**都提供 = 配置显式优先**；只提供一个报错 |
 | `cleanup` | `keep`（glob 列表，缺省 `[".git"]`） | `deleted`（清理条目数） | 删 workspace 下不在 keep 内的一切；`.git` 缺省保留是为了下轮 fetch 快路径 |
 
